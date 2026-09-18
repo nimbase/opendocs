@@ -294,6 +294,22 @@ for p in sheet.pages:
 d.close()
 ```
 
+### Roadmap
+- [x] ZIP package layer (stored/deflated, writer, spill-to-disk)
+- [x] DOCX reader (runs, tables, numbering, styles, images, headers/footers, notes, comments, textboxes, SDT)
+- [x] DOCX writer (full package assembly, model-identical round-trips, LibreOffice PDF acceptance)
+- [x] DOCX typed fields (complex + simple, all instruction kinds)
+- [x] DOCX tracked changes (run/body wrappers, marks, changes, ranges, rsids, accept-view text)
+- [x] PDF read/write (parse, build, encrypt, sign, fill, flatten, merge, extract, embed, incremental)
+- [ ] Legacy DOC read + write (binary Word format)
+- [ ] ODT read + write
+- [ ] RTF read + write
+- [ ] TXT read + write
+- [ ] XLSX read + write
+- [ ] PPTX read + write
+- [ ] DOCX high-level builder API (compose documents without touching the model)
+- [ ] DOCX accept/reject revisions API
+
 ### ❤ Contributions & Support
 - 🐛 Found a bug? [Create a new Issue](https://github.com/nimbase/opendocs/issues)
 - 👋 Wanna help? [Fork it!](https://github.com/nimbase/opendocs/fork)
