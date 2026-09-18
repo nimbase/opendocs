@@ -13,7 +13,6 @@
 
 
 ## Features
-- SIMD-accelerated + Memfiles readers
 - `DOCX` Reader and Writer
   - Paragraphs, runs, text formatting, borders, tabs, and breaks
   - Inline and floating images
