@@ -2,6 +2,32 @@ name: test
 on: [push, pull_request]
 jobs:
   test:
-    uses: nimbase/setup-nim-action/.github/workflows/test.yml@main
+    uses: nimbase/setup-nim-action/.github/workflows/test_clue.yml@main
     with:
       nim-version: stable
+      # System libraries with pkg-config files: libvips (image decode
+      # and color) and harfbuzz incl. subset + icu (text shaping,
+      # font subsetting). The Nim bindings resolve compile flags
+      # through `pkg-config ...` at Nim compile time.
+      pre-install-command: |
+        set -eu
+        case "$RUNNER_OS" in
+          Linux)
+            sudo apt-get update -q
+            sudo apt-get install -y -q pkg-config libicu-dev \
+              libharfbuzz-dev libvips-dev
+            ;;
+          macOS)
+            brew install pkgconf harfbuzz vips
+            ;;
+          Windows)
+            # MSYS2 UCRT64 bottles: coherent prefix, so the shipped
+            # vips.pc / harfbuzz.pc files resolve out of the box.
+            C:/msys64/usr/bin/pacman -Sy --noconfirm
+            C:/msys64/usr/bin/pacman -S --noconfirm --needed \
+              mingw-w64-ucrt-x86_64-pkg-config \
+              mingw-w64-ucrt-x86_64-harfbuzz \
+              mingw-w64-ucrt-x86_64-libvips
+            echo "C:/msys64/ucrt64/bin" >> "$GITHUB_PATH"
+            ;;
+        esac
