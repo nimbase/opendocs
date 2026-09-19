@@ -38,6 +38,13 @@
   - Font Embedding TTF/OpenType with subsetting
   - Images JPEG PNG (supporting alpha)
   - Incremental saves: Append changes, preserve signatures
+- XLSX Reader (xlsx, xlsm, xltx, xltm, xlam)
+  - Sheets, rows, columns & cells with lazy per-sheet parsing
+  - All cell kinds: numbers, text, shared strings, bools, errors & dates
+  - Formatted values with builtin number formats & 1900/1904 date systems
+  - Formulas as cached values plus formula text
+  - Sheet names, A1 references & case-insensitive lookup
+  - Large workbooks via spill-to-disk; encrypted files rejected safely
 
 ## Examples
 
