@@ -1,9 +1,14 @@
+## Copyright (c) 2026 nimbase (MIT, see LICENSE at repo root).
+## Portions derived from excelize (https://github.com/qax-os/excelize,
+## commit 0434413, 2026-09-18): Copyright (c) 2016-2026 The excelize
+## Authors, Copyright (c) 2011-2017 Geoffrey J. Teale, BSD-3-Clause.
+## SPDX-License-Identifier: MIT AND BSD-3-Clause
+##
 ## Spreadsheet `.xlsx`/`.xlsm`/`.xltx`/`.xltm`/`.xlam` (OOXML
 ## SpreadsheetML) reader model.
 ##
 ## Lazy like excelize: the package stays in `archive` (or spilled files) and
 ## sheets / shared strings parse on first access, then cache in `sheets`.
-## Excelize is licensed under BSD-3-Clause-1 https://github.com/qax-os/excelize?tab=BSD-3-Clause-1-ov-file
 
 type
   XlsxError* = object of CatchableError

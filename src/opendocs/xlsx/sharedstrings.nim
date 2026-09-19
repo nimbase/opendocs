@@ -1,6 +1,11 @@
+## Copyright (c) 2026 nimbase (MIT, see LICENSE at repo root).
+## Portions derived from excelize (https://github.com/qax-os/excelize,
+## commit 0434413, 2026-09-18): Copyright (c) 2016-2026 The excelize
+## Authors, Copyright (c) 2011-2017 Geoffrey J. Teale, BSD-3-Clause.
+## SPDX-License-Identifier: MIT AND BSD-3-Clause
+##
 ## Shared string table: lazy load of `xl/sharedStrings.xml`.
 ## Ports of excelize `sharedStringsReader` and `xlsxSI.String()`.
-## Excelize is licensed under BSD-3-Clause-1 https://github.com/qax-os/excelize?tab=BSD-3-Clause-1-ov-file
 
 proc siText(si: XmlNode): string =
   ## Plain text of one `si`: direct `t` plus every rich-run `r/t`.

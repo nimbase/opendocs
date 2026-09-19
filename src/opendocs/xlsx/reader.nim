@@ -1,3 +1,9 @@
+## Copyright (c) 2026 nimbase (MIT, see LICENSE at repo root).
+## Portions derived from excelize (https://github.com/qax-os/excelize,
+## commit 0434413, 2026-09-18): Copyright (c) 2016-2026 The excelize
+## Authors, Copyright (c) 2011-2017 Geoffrey J. Teale, BSD-3-Clause.
+## SPDX-License-Identifier: MIT AND BSD-3-Clause
+##
 ## Spreadsheet `.xlsx` etc. reader: package open flow.
 ##
 ## Shared XML/part helpers live in `xlsx/base` (included before the
