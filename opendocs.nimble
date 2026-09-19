@@ -2,7 +2,7 @@
 
 version       = "0.1.0"
 author        = "George Lemon"
-description   = "A new awesome nimble package"
+description   = "Document readers and writers: DOCX, PDF, RTF, ODT, TXT, XLSX, PPTX"
 license       = "MIT"
 srcDir        = "src"
 

@@ -14,6 +14,12 @@
 
 ## Features
 - Read & Write DOCX and PDFs programatically
+- Encrypt & Decrypt using [nimcypher](https://github.com/nimbase/nimcypher)
+- Built-in compressor and decompressor via [zlib](https://github.com/status-im/nim-zlib)
+- Text shaping & Font embedding via [harfbuzz](https://github.com/nimbase/harfbuzz-nim)<br>
+  _shaping, measuring, wrapping & subsetting TTF/OpenType, incl. CJK & emoji_
+- High-performance image handling via [libvips](https://github.com/openpeeps/libvips-nim) (TO BE MOVED AT NIMBASE)<br>
+  _decode, resize & recompress JPEG/PNG with alpha for embedding & extraction_
 - DOCX Reader and Writer
   - Paragraphs, runs, text formatting, borders, tabs, and breaks
   - Inline and floating images
@@ -34,7 +40,6 @@
   - Incremental saves: Append changes, preserve signatures
 
 ## Examples
-{nimbase-repo-examples}
 
 ### DOCX reader
 
