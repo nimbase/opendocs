@@ -5,6 +5,7 @@ htmldocs/
 testresults/
 /tests/*
 !/tests/bench
+!/tests/data
+!/tests/fixtures
 !/tests/*.nim
 !/tests/*.nims
-

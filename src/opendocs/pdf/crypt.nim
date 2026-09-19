@@ -15,7 +15,7 @@ import std/strutils
 import nimcypher/algos/rc4
 import nimcypher/algos/aes
 import nimcypher/algos/sha256
-import checksums/md5
+import nimcypher/hashes/md5
 import ./types
 import ./lexer
 import ./cos
@@ -50,10 +50,7 @@ proc toStr(b: openArray[byte]): string =
     result[i] = char(b[i])
 
 proc md5raw(s: string): string =
-  let d = toMD5(s)
-  result = newString(d.len)
-  for i in 0 ..< d.len:
-    result[i] = char(d[i])
+  toStr(md5(toBytes(s)))
 
 proc sha256raw(s: string): string =
   toStr(sha256(toBytes(s)))
