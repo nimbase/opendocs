@@ -1,12 +1,7 @@
-# Main API entry point. Per-format modules are imported separately;
-# this file re-exports the shared plumbing plus each format module.
+# A collection of document readers and writers: DOCX, PDF, RTF, ODT, TXT, XLSX, PPTX
+#
+# (c) 2026 George Lemon | MIT License
+#          Made by Humans from OpenPeeps
+#          https://github.com/nimbase/opendocs
 
-import opendocs/zip
-import opendocs/docx
-
-export zip
-export docx
-
-proc add*(x, y: int): int =
-  ## Template placeholder (kept until format modules land).
-  return x + y
+{.error:"Import the specific parser you need".}
