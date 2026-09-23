@@ -8,14 +8,31 @@ jobs:
       # System libraries with pkg-config files: libvips (image decode
       # and color) and harfbuzz incl. subset + icu (text shaping,
       # font subsetting). The Nim bindings resolve compile flags
-      # through `pkg-config ...` at Nim compile time.
+      # through `pkg-config ...` at Nim compile time. The bindings
+      # target HarfBuzz 14.2.1 (see nimbase/harfbuzz), so Linux builds
+      # that exact release from source: noble ships 8.3.0, which lacks
+      # hb_subset_input_pin_all_axes_to_default (8.3.1+).
       pre-install-command: |
         set -eu
+        HB_VERSION=14.2.1
         case "$RUNNER_OS" in
           Linux)
             sudo apt-get update -q
-            sudo apt-get install -y -q pkg-config libicu-dev \
-              libharfbuzz-dev libvips-dev
+            sudo apt-get install -y -q meson ninja-build pkg-config \
+              libicu-dev libvips-dev
+            curl -sSL -o /tmp/harfbuzz.tar.xz \
+              "https://github.com/harfbuzz/harfbuzz/releases/download/${HB_VERSION}/harfbuzz-${HB_VERSION}.tar.xz"
+            tar -xf /tmp/harfbuzz.tar.xz -C /tmp
+            meson setup /tmp/hb-build "/tmp/harfbuzz-${HB_VERSION}" \
+              --prefix=/usr/local --buildtype=release \
+              -Dtests=disabled -Dutilities=disabled -Ddocs=disabled \
+              -Dfreetype=disabled -Dglib=disabled -Dgobject=disabled \
+              -Dcairo=disabled -Dchafa=disabled -Dgraphite=disabled
+            ninja -C /tmp/hb-build
+            sudo meson install -C /tmp/hb-build
+            sudo ldconfig
+            # Fail fast if /usr/local does not shadow apt's 8.3.0.
+            pkg-config --modversion harfbuzz harfbuzz-subset harfbuzz-icu
             ;;
           macOS)
             brew install pkgconf harfbuzz vips
