@@ -31,11 +31,33 @@ jobs:
             ninja -C /tmp/hb-build
             sudo meson install -C /tmp/hb-build
             sudo ldconfig
-            # Fail fast if /usr/local does not shadow apt's 8.3.0.
+            # apt's libvips stack pins `harfbuzz = 8.3.0` in its .pc
+            # Requires chain, which pkg-config then refuses to satisfy
+            # against the 14.2.1 in /usr/local. Relax those pins to an
+            # unversioned dep (HarfBuzz is ABI-stable, so the vips stack
+            # built against 8.3.0 runs fine on 14.2.1).
+            sudo grep -rlE 'harfbuzz =[ ]*[0-9.]+' \
+              /usr/lib/x86_64-linux-gnu/pkgconfig \
+              /usr/lib/pkgconfig /usr/share/pkgconfig 2>/dev/null | \
+              sudo xargs -r sed -i -E 's/harfbuzz =[ ]*[0-9.]+/harfbuzz/g' || true
+            # Fail fast: versions must shadow apt's 8.3.0, and the exact
+            # queries the Nim bindings issue at compile time must resolve.
             pkg-config --modversion harfbuzz harfbuzz-subset harfbuzz-icu
+            pkg-config --cflags --libs vips harfbuzz harfbuzz-subset harfbuzz-icu
             ;;
           macOS)
-            brew install pkgconf harfbuzz vips
+            brew install pkgconf icu4c harfbuzz vips
+            ICU_PREFIX="$(brew --prefix icu4c)"
+            export PKG_CONFIG_PATH="${ICU_PREFIX}/lib/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+            # Persist for the later compile steps: hb-icu.h includes
+            # <unicode/*.h> and harfbuzz-icu.pc Requires icu-uc, while
+            # keg-only icu4c is off the default path.
+            echo "PKG_CONFIG_PATH=${PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+            echo "CPATH=${ICU_PREFIX}/include${CPATH:+:${CPATH}}" >> "$GITHUB_ENV"
+            echo "LIBRARY_PATH=${ICU_PREFIX}/lib${LIBRARY_PATH:+:${LIBRARY_PATH}}" >> "$GITHUB_ENV"
+            # Fail fast: the exact queries the Nim bindings issue.
+            pkg-config --modversion harfbuzz harfbuzz-subset harfbuzz-icu
+            pkg-config --cflags --libs vips harfbuzz harfbuzz-subset harfbuzz-icu
             ;;
           Windows)
             # MSYS2 UCRT64 bottles: coherent prefix, so the shipped
