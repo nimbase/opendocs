@@ -19,14 +19,16 @@ jobs:
           Linux)
             sudo apt-get update -q
             sudo apt-get install -y -q meson ninja-build pkg-config \
-              libicu-dev libvips-dev
+              libfreetype-dev libicu-dev libvips-dev
             curl -sSL -o /tmp/harfbuzz.tar.xz \
               "https://github.com/harfbuzz/harfbuzz/releases/download/${HB_VERSION}/harfbuzz-${HB_VERSION}.tar.xz"
             tar -xf /tmp/harfbuzz.tar.xz -C /tmp
+            # freetype stays enabled: apt's libpangoft2 links hb_ft_*,
+            # which a freetype-less build would leave undefined.
             meson setup /tmp/hb-build "/tmp/harfbuzz-${HB_VERSION}" \
               --prefix=/usr/local --buildtype=release \
               -Dtests=disabled -Dutilities=disabled -Ddocs=disabled \
-              -Dfreetype=disabled -Dglib=disabled -Dgobject=disabled \
+              -Dglib=disabled -Dgobject=disabled \
               -Dcairo=disabled -Dchafa=disabled -Dgraphite=disabled
             ninja -C /tmp/hb-build
             sudo meson install -C /tmp/hb-build
@@ -44,20 +46,34 @@ jobs:
             # queries the Nim bindings issue at compile time must resolve.
             pkg-config --modversion harfbuzz harfbuzz-subset harfbuzz-icu
             pkg-config --cflags --libs vips harfbuzz harfbuzz-subset harfbuzz-icu
+            # ... including the hb-ft symbols apt's libpangoft2 needs.
+            printf '%s\n' '#include <harfbuzz/hb-ft.h>' \
+              'int main(void){return hb_ft_face_create(0,0)!=0;}' > /tmp/hbft.c
+            cc /tmp/hbft.c -o /tmp/hbft $(pkg-config --cflags --libs harfbuzz)
             ;;
           macOS)
             brew install pkgconf icu4c harfbuzz vips
             ICU_PREFIX="$(brew --prefix icu4c)"
+            HB_PREFIX="$(brew --prefix harfbuzz)"
             export PKG_CONFIG_PATH="${ICU_PREFIX}/lib/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
             # Persist for the later compile steps: hb-icu.h includes
             # <unicode/*.h> and harfbuzz-icu.pc Requires icu-uc, while
-            # keg-only icu4c is off the default path.
+            # keg-only icu4c is off the default path. The harfbuzz parent
+            # include dir is likewise needed: the bindings emit
+            # <harfbuzz/hb.h>, but harfbuzz.pc only supplies the suffixed
+            # .../include/harfbuzz dir.
             echo "PKG_CONFIG_PATH=${PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
-            echo "CPATH=${ICU_PREFIX}/include${CPATH:+:${CPATH}}" >> "$GITHUB_ENV"
+            echo "CPATH=${HB_PREFIX}/include:${ICU_PREFIX}/include${CPATH:+:${CPATH}}" >> "$GITHUB_ENV"
             echo "LIBRARY_PATH=${ICU_PREFIX}/lib${LIBRARY_PATH:+:${LIBRARY_PATH}}" >> "$GITHUB_ENV"
-            # Fail fast: the exact queries the Nim bindings issue.
+            # Fail fast: the exact queries the Nim bindings issue, plus the
+            # header layout they assume.
             pkg-config --modversion harfbuzz harfbuzz-subset harfbuzz-icu
             pkg-config --cflags --libs vips harfbuzz harfbuzz-subset harfbuzz-icu
+            printf '%s\n' '#include <harfbuzz/hb.h>' \
+              '#include <harfbuzz/hb-subset.h>' \
+              'int main(void){return 0;}' > /tmp/hbhdr.c
+            cc -fsyntax-only /tmp/hbhdr.c \
+              -I"${HB_PREFIX}/include" $(pkg-config --cflags harfbuzz harfbuzz-subset)
             ;;
           Windows)
             # MSYS2 UCRT64 bottles: coherent prefix, so the shipped
