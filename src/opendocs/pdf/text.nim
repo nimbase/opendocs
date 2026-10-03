@@ -444,63 +444,98 @@ proc showText(d: var PdfDoc, gs: var GState, fd: FontDecoder,
     fontName: fd.fontName, w: w))
 
 proc decoderFor(d: var PdfDoc, res: CosObj,
-    cache: var Table[string, FontDecoder], gs: GState): FontDecoder =
+    cache: var Table[string, FontDecoder], gs: GState,
+    depth: int): FontDecoder =
+  ## Font lookup for the resource frame `res`. The cache key includes
+  ## the nesting depth because the same resource name can denote a
+  ## different font in a form than on the page (a form's /Resources
+  ## shadows the page's), and a name-only key would silently return the
+  ## wrong decoder.
   if gs.text.fontName.len == 0:
     pdfFail("text showing operator without a selected font (Tf)")
-  if cache.hasKey(gs.text.fontName):
-    return cache[gs.text.fontName]
+  let key = $depth & "/" & gs.text.fontName
+  if cache.hasKey(key):
+    return cache[key]
   var fonts = res.dictGet("Font")
   if fonts.kind == coRef:
     fonts = d.resolve(fonts)
   if fonts.kind != coDict:
-    pdfFail("page /Resources has no /Font dictionary")
+    pdfFail("resource frame has no /Font dictionary")
   let r = fonts.dictGet(gs.text.fontName)
   if r.kind != coRef and r.kind != coDict:
     pdfFail("font /" & gs.text.fontName & " missing from /Resources")
   result = d.loadDecoder(r, gs.text.fontName)
-  cache[gs.text.fontName] = result
+  cache[key] = result
+
+proc insideBox(wo: WalkedOp, x, y: float64): bool =
+  ## BBox test in device space. Forms nest, so the test is against the
+  ## recorded box of the frame this op ran in; an op with no box (page
+  ## level, or a form with no /BBox) is never clipped.
+  if not wo.hasBBox:
+    return true
+  let b = wo.bbox
+  x >= b[0] and x <= b[2] and y >= b[1] and y <= b[3]
+
+proc showClipped(d: var PdfDoc, wo: WalkedOp, gs: var GState,
+    cache: var Table[string, FontDecoder], s: string,
+    runs: var seq[TextRun]) =
+  ## Show one string and drop the runs whose device origin falls outside
+  ## the enclosing form's /BBox. Clipping happens after showing because
+  ## the run origin is only known once the text matrix is folded with
+  ## the CTM.
+  if s.len == 0:
+    return
+  let fd = d.decoderFor(wo.resources, cache, gs, wo.depth)
+  let before = runs.len
+  d.showText(gs, fd, s, runs)
+  var keep = before
+  while keep < runs.len:
+    let r = runs[keep]
+    if not insideBox(wo, r.x, r.y):
+      runs.setLen(keep)
+    else:
+      inc keep
 
 proc extractText*(d: var PdfDoc, index: int): seq[TextRun] =
   ## One run per shown string with its device-space origin. Tj
   ## numbers shift Tm only (Td restarts from Tlm); quote operators
   ## expand to their T* plus spacing equivalents.
-  let ops = d.walkPageOps(index)
-  let res = d.pageResources(index)
+  ##
+  ## Form XObjects are expanded (M7): runs drawn inside a form are
+  ## reported in device space with the form's /Matrix already applied,
+  ## and runs outside the form's /BBox are dropped.
+  let ops = d.walkNested(index)
   var cache = initTable[string, FontDecoder]()
   var gs = initGState()
   result = @[]
-  for op in ops:
-    case op.name
+  for wo in ops:
+    case wo.op.name
     of "Tj":
-      if op.operands.len != 1 or op.operands[0].kind != coStr:
+      if wo.op.operands.len != 1 or wo.op.operands[0].kind != coStr:
         pdfFail("Tj needs one string operand")
-      d.showText(gs, d.decoderFor(res, cache, gs),
-        op.operands[0].sval, result)
+      showClipped(d, wo, gs, cache, wo.op.operands[0].sval, result)
     of "TJ":
-      if op.operands.len != 1 or op.operands[0].kind != coArray:
+      if wo.op.operands.len != 1 or wo.op.operands[0].kind != coArray:
         pdfFail("TJ needs one array operand")
-      for item in op.operands[0].items:
+      for item in wo.op.operands[0].items:
         if item.kind == coStr:
-          d.showText(gs, d.decoderFor(res, cache, gs), item.sval,
-            result)
+          showClipped(d, wo, gs, cache, item.sval, result)
         else:
           let th = gs.text.scale / 100.0
           let t: Matrix = [1.0, 0.0, 0.0, 1.0,
             -item.asFloat() * gs.text.fontSize * th / 1000.0, 0.0]
           gs.textMatrix = concatMatrix(t, gs.textMatrix)
     of "'":
-      if op.operands.len != 1 or op.operands[0].kind != coStr:
+      if wo.op.operands.len != 1 or wo.op.operands[0].kind != coStr:
         pdfFail("' needs one string operand")
       gs.applyOp(ContentOp(name: "T*"))
-      d.showText(gs, d.decoderFor(res, cache, gs),
-        op.operands[0].sval, result)
+      showClipped(d, wo, gs, cache, wo.op.operands[0].sval, result)
     of "\"":
-      if op.operands.len != 3 or op.operands[2].kind != coStr:
+      if wo.op.operands.len != 3 or wo.op.operands[2].kind != coStr:
         pdfFail("\" needs word/char spacing plus a string")
-      gs.text.wordSpace = op.operands[0].asFloat()
-      gs.text.charSpace = op.operands[1].asFloat()
+      gs.text.wordSpace = wo.op.operands[0].asFloat()
+      gs.text.charSpace = wo.op.operands[1].asFloat()
       gs.applyOp(ContentOp(name: "T*"))
-      d.showText(gs, d.decoderFor(res, cache, gs),
-        op.operands[2].sval, result)
+      showClipped(d, wo, gs, cache, wo.op.operands[2].sval, result)
     else:
-      gs.applyOp(op)
+      gs.applyOp(wo.op)

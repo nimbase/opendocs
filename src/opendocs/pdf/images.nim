@@ -8,8 +8,12 @@
 ## CosObj values for the vips back half. Coded streams (DCT, JPX,
 ## CCITT, JBIG2) pass through with their bytes intact; Lab images and
 ## Pattern color spaces raise clear errors.
+##
+## Collection walks the page through `walkNested`, so images inside Form
+## XObjects are found too, as are inline images (`BI`). Each result
+## carries the CTM at its `Do` (`PdfRawImage.ctm`) and the nesting depth,
+## because the same XObject drawn twice has two different placements.
 
-import std/tables
 import ./types
 import ./lexer
 import ./cos
@@ -51,6 +55,8 @@ type
     isMask*: bool ## /ImageMask stencil
     mask*: CosObj ## explicit /Mask (array color-key or stream ref)
     smask*: CosObj ## /SMask stream ref (coNull when absent)
+    ctm*: Matrix ## CTM at the `Do` (identity for inline images)
+    depth*: int ## resource-frame nesting depth, 0 on the page
 
 proc ncompOf*(cs: PdfColorSpace): int =
   case cs.kind
@@ -245,33 +251,82 @@ proc parseRawImage*(d: var PdfDoc, name: string,
       ncomp), coded: coded, coding: coding, isMask: isMask,
     mask: obj.dictGet("Mask"), smask: obj.dictGet("SMask"))
 
+proc attachPlacement(raw: var PdfRawImage, wo: WalkedOp) =
+  raw.ctm = wo.ctm
+  raw.depth = wo.depth
+
+proc inlineRawImage*(d: var PdfDoc, wo: WalkedOp,
+    index: int): PdfRawImage =
+  ## An inline image (`BI ... ID ... EI`) as a raw image. content.nim
+  ## already slices the payload and the dict into operands[0..1]; here
+  ## they are recombined into a coStream so the regular image path
+  ## (colorspace, /Decode, masks, filter detection) is shared.
+  ##
+  ## Two adjustments are needed before the shared parser runs. An inline
+  ## image is an image by construction and carries no /Subtype, so one is
+  ## supplied. Its dimensions use the abbreviations /W and /H (Table 93),
+  ## which the dictionary reader does not canonicalise, so they are
+  ## rewritten to the long forms.
+  let op = wo.op
+  if op.operands.len != 2 or op.operands[0].kind != coDict or
+      op.operands[1].kind != coStr:
+    pdfFail("malformed inline image on page " & $index)
+  let dict = op.operands[0]
+  var keys: seq[string] = @[]
+  var vals: seq[CosObj] = @[]
+  keys.add("Subtype")
+  vals.add(CosObj(kind: coName, name: "Image"))
+  for i, k in dict.keys:
+    var name = k
+    var val = dict.vals[i]
+    case k
+    of "W": name = "Width"
+    of "H": name = "Height"
+    of "BPC": name = "BitsPerComponent"
+    of "CS": name = "ColorSpace"
+    of "D": name = "Decode"
+    of "DP": name = "DecodeParms"
+    of "F": name = "Filter"
+    of "IM": name = "ImageMask"
+    of "I": name = "Interpolate"
+    of "L": name = "Length"
+    else: discard
+    keys.add(name)
+    vals.add(val)
+  let payload = CosObj(kind: coStream, streamDict: keys,
+    streamVals: vals, raw: op.operands[1].sval)
+  result = d.parseRawImage("inline" & $index, payload)
+  result.attachPlacement(wo)
+
 proc pageRawImages*(d: var PdfDoc, index: int):
     seq[tuple[name: string, raw: PdfRawImage]] =
-  ## Top-level /Resources /XObject images referenced by Do on the page.
-  ## Form XObjects are skipped (nested content is an M7 concern).
-  let ops = d.walkPageOps(index)
-  var xobjs = d.pageResources(index).dictGet("XObject")
-  if xobjs.kind == coRef:
-    xobjs = d.resolve(xobjs)
-  if xobjs.kind != coDict:
-    return @[]
+  ## Every image XObject the page draws, including those inside Form
+  ## XObjects (M7) and inline images. Each entry records the CTM in
+  ## effect at the `Do`, so callers can place it in device space.
+  ##
+  ## The same XObject drawn more than once yields one entry per drawing:
+  ## each has its own CTM, so collapsing them would lose placement.
+  let ops = d.walkNested(index)
   result = @[]
-  var seen = initTable[string, bool]()
-  for op in ops:
+  for wo in ops:
+    let op = wo.op
+    if op.name == "BI":
+      # Inline images carry their dictionary inline, so no resource
+      # lookup is needed. Name them by position to stay stable.
+      result.add(("inline" & $result.len & "@" & $wo.depth,
+        d.inlineRawImage(wo, index)))
+      continue
     if op.name != "Do" or op.operands.len != 1 or
         op.operands[0].kind != coName:
       continue
     let name = op.operands[0].name
-    if seen.hasKey(name):
-      continue
-    seen[name] = true
-    var o = xobjs.dictGet(name)
+    let o = d.lookupXObject(wo.resources, name)
     if o.kind == coNull:
       pdfFail("XObject /" & name & " missing from /Resources")
-    if o.kind == coRef:
-      o = d.resolve(o)
     if o.kind != coDict and o.kind != coStream:
       pdfFail("XObject /" & name & " is not a dictionary")
     let st = o.dictGet("Subtype")
     if st.kind == coName and st.name == "Image":
-      result.add((name, d.parseRawImage(name, o)))
+      var raw = d.parseRawImage(name, o)
+      raw.attachPlacement(wo)
+      result.add((name, raw))

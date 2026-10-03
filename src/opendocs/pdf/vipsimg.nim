@@ -17,8 +17,10 @@ import ./cos
 import ./docmodel
 import ./filters
 import ./images
+import ./gstate
 
 export images
+export gstate
 
 type
   ImageEncoding* = enum
@@ -31,6 +33,8 @@ type
     encoding*: ImageEncoding
     hasAlpha*: bool
     pixels*: string ## RGB8, Gray8 or Alpha8 (+ alpha band when set)
+    ctm*: Matrix ## placement at the `Do`; identity when unset
+    depth*: int ## resource-frame nesting depth, 0 on the page
 
 proc ensureVips*() =
   if vips_init("opengraphics") != 0:
@@ -282,11 +286,16 @@ proc convertRaw(d: var PdfDoc, raw: PdfRawImage): PdfImage =
     pixels: rgb)
 
 proc pageImages*(d: var PdfDoc, index: int): seq[PdfImage] =
-  ## All top-level images on the page, converted to RGB8/Gray8
-  ## (plus alpha when masked). Vips failures name the image.
+  ## All images the page draws, including those inside Form XObjects and
+  ## inline images, converted to RGB8/Gray8 (plus alpha when masked).
+  ## Placement (`ctm`, `depth`) from the raw image is carried through.
+  ## Vips failures name the image.
   result = @[]
   try:
     for item in d.pageRawImages(index):
-      result.add(d.convertRaw(item.raw))
+      var img = d.convertRaw(item.raw)
+      img.ctm = item.raw.ctm
+      img.depth = item.raw.depth
+      result.add(img)
   except VipsError as e:
     pdfFail("libvips failed (" & e.msg & ")")

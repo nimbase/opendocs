@@ -20,6 +20,10 @@ import libvips/api
 import libvips/bindings/vips
 import ./pdf_support
 import ../src/opendocs/pdf
+import ../src/opendocs/pdf/crypt
+import ../src/opendocs/pdf/filters
+import ../src/opendocs/pdf/shape
+import ../src/opendocs/pdf/gstate
 
 const OutDir = "tests/data/pdf"
 
@@ -108,6 +112,17 @@ proc sanity(path: string, pages, minOps: int, password = "") =
     total += d.walkPageOps(i).len
   doAssert total >= minOps, path & ": only " & $total & " ops"
   echo "ok " & path & " (" & $total & " ops)"
+
+proc sanityNested(path: string, pages, minRuns: int, password = "") =
+  ## Like sanity, but counts runs from walkNested so Form XObject content
+  ## is included. Catches a fixture whose form never gets descended into.
+  let data = readFile(path)
+  var d = openDoc(data, defaultPdfLimits(), password)
+  var total = 0
+  for i in 0 ..< pages:
+    total += d.extractText(i).len
+  doAssert total >= minRuns, path & ": only " & $total & " nested runs"
+  echo "ok " & path & " (" & $total & " runs)"
 
 # --- M4 encrypted fixtures (independent derivation for round-trip) ---
 
@@ -277,18 +292,18 @@ proc writeR6() =
 
 # --- M3b text fixture: WinAnsi + TJ + subset TrueType with ToUnicode ---
 #
-# The embedded font is subset from the sibling harfbuzz checkout
-# (../harfbuzz/tests/data/DejaVuSans.ttf, Bitstream Vera license);
-# that path is only needed when regenerating fixtures, never at test
-# time. Tests read the font bytes back out of the PDF itself.
+# The embedded font is subset from the vendored DejaVuSans
+# (tests/data/fonts/DejaVuSans.ttf, Bitstream Vera license). Tests read
+# the font bytes back out of the PDF itself, so this is only needed when
+# regenerating fixtures.
 
-const DejaVuPath = "../harfbuzz/tests/data/DejaVuSans.ttf"
+const DejaVuPath = "tests/data/fonts/DejaVuSans.ttf"
 
 proc subsetDejaVu(unicodes: seq[int]): tuple[bytes: string,
     advances: seq[float64]] =
   if not fileExists(DejaVuPath):
     quit("missing " & DejaVuPath &
-      " (sibling harfbuzz checkout required to regenerate fixtures)")
+      " (vendored font required to regenerate fixtures)")
   let src = readFile(DejaVuPath)
   let blob = hb_blob_create(src.cstring, src.len.cuint,
     HB_MEMORY_MODE_READONLY, nil, nil)
@@ -508,6 +523,176 @@ proc writeImages() =
   ]
   writeFile(OutDir / "m5_images.pdf", assemblePdf(objs))
 
+# --- M7 Form XObject fixtures ---------------------------------------------
+#
+# A form is a content stream invoked by `Do`, carrying its own /Matrix,
+# /BBox and /Resources. Its resources shadow the page's for the duration
+# of the call, so /F1 can denote a different font inside the form than
+# outside it. These fixtures exercise text, image, nesting, BBox clipping
+# and resource shadowing.
+
+proc winAnsiFont(): string =
+  "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding " &
+    "/WinAnsiEncoding >>"
+
+proc formStream(extraDict, content: string): string =
+  ## A /Subtype /Form XObject stream. `extraDict` carries /Matrix, /BBox
+  ## and /Resources. Without /Subtype /Form a `Do` is a pass-through, so
+  ## every form fixture must go through here.
+  streamObj("/Subtype /Form /Filter /FlateDecode " & extraDict,
+    deflateEncode(content))
+
+proc writeFormText() =
+  # Page draws /Fm1, which draws two text lines in its own space. The
+  # form translates by (100, 300), so its lines land there, not at the
+  # coordinates written inside the form.
+  let form = "BT /F1 14 Tf 10 200 Td (Nested form text) Tj ET\n" &
+    "BT /F1 14 Tf 10 180 Td (Second form line) Tj ET"
+  let objs = @[
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " &
+      "/Resources << /Font << /F1 4 0 R >> " &
+      "/XObject << /Fm1 5 0 R >> >> /Contents 6 0 R >>",
+    winAnsiFont(),
+    formStream("/Matrix [1 0 0 1 100 300] /BBox [0 0 400 400] " &
+      "/Resources << /Font << /F1 4 0 R >> >>", form),
+    streamFlate("BT /F1 12 Tf 72 720 Td (Page level text) Tj ET\n/Fm1 Do"),
+  ]
+  writeFile(OutDir / "m7_form_text.pdf", assemblePdf(objs))
+
+proc writeFormImage() =
+  # A 2x1 DeviceGray image drawn from inside a form that scales by 2.
+  let img = "\x40\x80"
+  let objs = @[
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " &
+      "/Resources << /XObject << /Fm1 5 0 R >> >> /Contents 6 0 R >>",
+    "<< /Type /XObject /Subtype /Image /Width 2 /Height 1 " &
+      "/ColorSpace /DeviceGray /BitsPerComponent 8 /Length " & $img.len &
+      " >>\nstream\n" & img & "\nendstream",
+    formStream("/Matrix [2 0 0 2 50 50] /BBox [0 0 200 200] " &
+      "/Resources << /XObject << /Im1 4 0 R >> >>", "/Im1 Do"),
+    streamFlate("/Fm1 Do"),
+  ]
+  writeFile(OutDir / "m7_form_image.pdf", assemblePdf(objs))
+
+proc writeFormNested() =
+  # /Fm2 contains /Fm1. The outer form scales 2x and translates (10, 20);
+  # the inner form translates (5, 5) with no scale. Text must land at
+  # (20, 40 + baseline) after both matrices compose.
+  let inner = "BT /F1 12 Tf 0 0 Td (Deeply nested) Tj ET"
+  # Object order: 1 catalog, 2 pages, 3 page, 4 font, 5 outer form,
+  # 6 inner form, 7 page content stream.
+  let objs = @[
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " &
+      "/Resources << /XObject << /Fm2 5 0 R >> >> /Contents 7 0 R >>",
+    winAnsiFont(),
+    formStream("/Matrix [2 0 0 2 10 20] /BBox [0 0 400 400] " &
+      "/Resources << /XObject << /Fm1 6 0 R >> " &
+      "/Font << /F1 4 0 R >> >>", "/Fm1 Do"),
+    formStream("/Matrix [1 0 0 1 5 5] /BBox [0 0 400 400] " &
+      "/Resources << /Font << /F1 4 0 R >> >>", inner),
+    streamFlate("/Fm2 Do"),
+  ]
+  writeFile(OutDir / "m7_form_nested.pdf", assemblePdf(objs))
+
+proc writeFormBBox() =
+  # The form's /BBox spans y 0..20, so the line at y=200 is outside it
+  # and must be dropped, while the line at y=10 stays.
+  let form = "BT /F1 12 Tf 10 200 Td (Above the box) Tj ET\n" &
+    "BT /F1 12 Tf 10 10 Td (Inside the box) Tj ET"
+  let objs = @[
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " &
+      "/Resources << /XObject << /Fm1 5 0 R >> >> /Contents 6 0 R >>",
+    winAnsiFont(),
+    formStream("/BBox [0 0 400 20] " &
+      "/Resources << /Font << /F1 4 0 R >> >>", form),
+    streamFlate("/Fm1 Do"),
+  ]
+  writeFile(OutDir / "m7_form_bbox.pdf", assemblePdf(objs))
+
+proc writeFormShadow() =
+  # /F1 is a plain Helvetica on the page, but inside the form it resolves
+  # to a second font with a /Differences array. Text drawn with /F1
+  # inside the form must use the form's font, not the page's. A decoder
+  # cache keyed on the name alone would return the wrong one.
+  let pageFont = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica " &
+    "/Encoding /WinAnsiEncoding >>"
+  let formFont = "<< /Type /Font /Subtype /Type1 /BaseFont /Courier " &
+    "/Encoding << /Type /Encoding /BaseEncoding /WinAnsiEncoding " &
+    "/Differences [65 /alpha] >> >>"
+  # Object order: 1 catalog, 2 pages, 3 page, 4 page font,
+  # 5 form, 6 form font, 7 page content stream.
+  let objs = @[
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " &
+      "/Resources << /Font << /F1 4 0 R >> " &
+      "/XObject << /Fm1 5 0 R >> >> /Contents 7 0 R >>",
+    pageFont,
+    formStream("/BBox [0 0 400 400] " &
+      "/Resources << /Font << /F1 6 0 R >> >>",
+      "BT /F1 12 Tf 10 50 Td (AAA) Tj ET"),
+    formFont,
+    streamFlate("BT /F1 12 Tf 72 700 Td (PageF1) Tj ET\n/Fm1 Do"),
+  ]
+  writeFile(OutDir / "m7_form_shadow.pdf", assemblePdf(objs))
+
+proc writeFormLoop() =
+  # A form whose content invokes itself. Must raise PdfError at the
+  # nesting limit rather than recursing forever or exhausting the stack.
+  let objs = @[
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " &
+      "/Resources << /XObject << /Fm1 5 0 R >> >> /Contents 6 0 R >>",
+    winAnsiFont(),
+    formStream("/BBox [0 0 400 400] " &
+      "/Resources << /XObject << /Fm1 5 0 R >> " &
+      "/Font << /F1 4 0 R >> >>", "/Fm1 Do"),
+    streamFlate("/Fm1 Do"),
+  ]
+  writeFile(OutDir / "m7_form_loop.pdf", assemblePdf(objs))
+
+proc writeFormInline() =
+  # An inline image at page level beside one drawn inside a form. Both
+  # payloads use bytes with no whitespace, since the EI scan in
+  # content.nim stops at the first whitespace + "EI" + delimiter run.
+  let objs = @[
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " &
+      "/Resources << /XObject << /Fm1 5 0 R >> >> /Contents 6 0 R >>",
+    winAnsiFont(),
+    formStream("/BBox [0 0 400 400] " &
+      "/Resources << /Font << /F1 4 0 R >> >>",
+      "BI /W 2 /H 1 /CS /RGB /BPC 8 ID \x10\x30\x50 EI"),
+    streamFlate("q BI /W 2 /H 1 /CS /G /BPC 8 ID \xAA\xBB EI Q\n/Fm1 Do"),
+  ]
+  writeFile(OutDir / "m7_form_inline.pdf", assemblePdf(objs))
+
+proc writeFormNoResources() =
+  # The form omits /Resources entirely, which is legal: it inherits the
+  # page's frame. Must extract, not raise.
+  let objs = @[
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " &
+      "/Resources << /Font << /F1 4 0 R >> " &
+      "/XObject << /Fm1 5 0 R >> >> /Contents 6 0 R >>",
+    winAnsiFont(),
+    formStream("/BBox [0 0 400 400]",
+      "BT /F1 12 Tf 10 50 Td (Inherited resources) Tj ET"),
+    streamFlate("/Fm1 Do"),
+  ]
+  writeFile(OutDir / "m7_form_nores.pdf", assemblePdf(objs))
+
 createDir(OutDir)
 writeBasic()
 writeUpdate()
@@ -517,6 +702,14 @@ writeR6()
 writeText()
 writeImages()
 writeCjk()
+writeFormText()
+writeFormImage()
+writeFormNested()
+writeFormBBox()
+writeFormShadow()
+writeFormLoop()
+writeFormInline()
+writeFormNoResources()
 sanity(OutDir / "m3a_basic.pdf", 2, 8)
 sanity(OutDir / "m3a_update.pdf", 1, 3)
 sanity(OutDir / "m4_rc4.pdf", 1, 3, "user123")
@@ -525,3 +718,16 @@ sanity(OutDir / "m4_r6.pdf", 1, 3, "user456")
 sanity(OutDir / "m3b_text.pdf", 2, 16)
 sanity(OutDir / "m5_images.pdf", 1, 7)
 sanity(OutDir / "m8_cjk.pdf", 5, 10)
+sanityNested(OutDir / "m7_form_text.pdf", 1, 3)
+sanityNested(OutDir / "m7_form_nested.pdf", 1, 1)
+sanityNested(OutDir / "m7_form_nores.pdf", 1, 1)
+# The loop fixture is expected to raise at the nesting limit.
+let loopData = readFile(OutDir / "m7_form_loop.pdf")
+var raised = false
+try:
+  var ld = openDoc(loopData)
+  discard ld.extractText(0)
+except PdfError:
+  raised = true
+doAssert raised, "m7_form_loop.pdf: self-referential form did not raise"
+echo "ok m7_form_loop.pdf (nesting limit fires)"

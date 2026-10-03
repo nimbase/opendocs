@@ -208,5 +208,181 @@ proc pageContentStream*(d: var PdfDoc, index: int): string =
     result.add(decodeCosStream(s))
 
 proc walkPageOps*(d: var PdfDoc, index: int): seq[ContentOp] =
-  ## Parsed operators for one page (empty when /Contents is missing).
+  ## Parsed operators for one page's own /Contents (empty when absent).
+  ## This is the flat view: no Form XObject expansion, and no resource
+  ## context per op. Use walkNested for anything that interprets the
+  ## operators, since a form's resources shadow the page's.
   parseContentStream(d.pageContentStream(index), d.limits)
+
+# ---------------------------------------------------------------------------
+# Form XObject descent (M7)
+#
+# A page's content stream can invoke `/Subtype /Form` XObjects with `Do`.
+# The invoked stream carries its own /Matrix, /BBox and /Resources, so
+# an op is only interpretable together with the resource frame that was
+# in effect when it ran. walkPageOps cannot express that (it returns a
+# flat list), which is why WalkedOp carries the frame with the operator
+# rather than exposing the frame as a parallel array: a consumer then
+# cannot pair an op with the wrong resources by accident.
+#
+# Descent is per `Do`-execution, not per object. The same form drawn 40
+# times on a page is walked 40 times, because each invocation has its own
+# CTM. Recursion is bounded by maxNestedXObject, not maxWalkDepth (which
+# governs the page tree).
+# ---------------------------------------------------------------------------
+
+type
+  WalkedOp* = object
+    op*: ContentOp
+    resources*: CosObj ## resource frame in effect for this op
+    ctm*: Matrix ## CTM in effect for this op (includes form /Matrix)
+    bbox*: array[4, float64] ## clipped /BBox in device space, NaN-free
+    hasBBox*: bool ## false for page-level ops
+    depth*: int ## 0 at page level, +1 per nested form
+
+proc resolveDict(d: var PdfDoc, v: CosObj): CosObj =
+  ## Resolve one indirection; a non-dict or missing value is coNull.
+  if v.kind == coRef:
+    return d.resolve(v)
+  v
+
+proc lookupXObject*(d: var PdfDoc, resources: CosObj,
+    name: string): CosObj =
+  ## One category lookup in a resolved /Resources dict. coNull when the
+  ## category or the entry is absent; callers decide whether that is an
+  ## error (a `Do` naming a missing XObject is) or expected (optional
+  ## categories like /ExtGState are not).
+  let cat = resources.dictGet("XObject")
+  let cats = resolveDict(d, cat)
+  if cats.kind != coDict:
+    return CosObj(kind: coNull)
+  resolveDict(d, cats.dictGet(name))
+
+proc formMatrix(form: CosObj): Matrix =
+  ## /Matrix for a form XObject; identity when absent. A malformed or
+  ## wrongly-typed /Matrix is ignored rather than fatal, matching how the
+  ## spec treats an optional entry.
+  let m = form.dictGet("Matrix")
+  if m.kind != coArray or m.items.len != 6:
+    return identityMatrix()
+  try:
+    var v: Matrix
+    for i in 0 .. 5:
+      v[i] = m.items[i].asFloat()
+    v
+  except PdfError:
+    identityMatrix()
+
+type
+  BBoxRect* = object
+    present*: bool ## false when the form carries no usable /BBox
+    rect*: array[4, float64] ## form space, x0 <= x1 and y0 <= y1
+
+proc formBBox(form: CosObj): BBoxRect =
+  ## /BBox in form space, normalised so x0 <= x1 and y0 <= y1.
+  let b = form.dictGet("BBox")
+  if b.kind != coArray or b.items.len != 4:
+    return BBoxRect()
+  try:
+    var r: array[4, float64]
+    for i in 0 .. 3:
+      r[i] = b.items[i].asFloat()
+    BBoxRect(present: true, rect: [min(r[0], r[2]), min(r[1], r[3]),
+      max(r[0], r[2]), max(r[1], r[3])])
+  except PdfError:
+    BBoxRect()
+
+proc deviceBox(b: array[4, float64], m: Matrix): array[4, float64] =
+  ## Device-space bounding box of a form-space rectangle: transform all
+  ## four corners, then renormalise. Transforming two corners is not
+  ## enough when the matrix rotates or skews.
+  let p0 = transformPoint(m, b[0], b[1])
+  let p1 = transformPoint(m, b[2], b[1])
+  let p2 = transformPoint(m, b[2], b[3])
+  let p3 = transformPoint(m, b[0], b[3])
+  [min(min(p0.x, p1.x), min(p2.x, p3.x)),
+    min(min(p0.y, p1.y), min(p2.y, p3.y)),
+    max(max(p0.x, p1.x), max(p2.x, p3.x)),
+    max(max(p0.y, p1.y), max(p2.y, p3.y))]
+
+proc matrixOp(m: Matrix): ContentOp =
+  ## `cm` operator applying m, used to enter a Form XObject.
+  var ops: seq[CosObj]
+  ops = newSeq[CosObj](6)
+  for i in 0 .. 5:
+    ops[i] = CosObj(kind: coFloat, fval: m[i])
+  ContentOp(name: "cm", operands: ops)
+
+proc walkInto(d: var PdfDoc, gs: var GState, ops: seq[ContentOp],
+    resources: CosObj, bbox: array[4, float64], hasBBox: bool,
+    depth: int, acc: var seq[WalkedOp]) =
+  ## Recursive worker for walkNested. Graphics state flows through `gs`
+  ## so the CTM seen by each op is the one in effect where it ran.
+  if depth > d.limits.maxNestedXObject:
+    pdfFail("Form XObject nesting exceeds limit " &
+      $d.limits.maxNestedXObject)
+  for op in ops:
+    if op.name != "Do" or op.operands.len != 1 or
+        op.operands[0].kind != coName:
+      acc.add(WalkedOp(op: op, resources: resources, ctm: gs.ctm,
+        bbox: bbox, hasBBox: hasBBox, depth: depth))
+      gs.applyOp(op)
+      continue
+    let name = op.operands[0].name
+    let xo = d.lookupXObject(resources, name)
+    if xo.kind == coNull:
+      pdfFail("XObject /" & name & " missing from /Resources")
+    if xo.kind != coDict and xo.kind != coStream:
+      pdfFail("XObject /" & name & " is not a dictionary")
+    let sub = xo.dictGet("Subtype")
+    if sub.kind != coName or sub.name != "Form":
+      # Images are collected by images.nim, which uses the CTM carried
+      # here. Other subtypes have no nested content to interpret.
+      acc.add(WalkedOp(op: op, resources: resources, ctm: gs.ctm,
+        bbox: bbox, hasBBox: hasBBox, depth: depth))
+      continue
+    if xo.kind != coStream:
+      pdfFail("Form XObject /" & name & " is not a stream")
+    # Per ISO 32000 8.10.1 a form runs as if wrapped in q/Q, so the
+    # caller's graphics state survives even an unbalanced q/Q inside the
+    # form. The synthesised q/cm/Q are emitted into the output so a
+    # consumer replaying the ops linearly lands on the same CTM this walk
+    # recorded; applying them only to the local gs would make WalkedOp.ctm
+    # disagree with what a linear replay computes.
+    let enterQ = ContentOp(name: "q")
+    let enterCm = matrixOp(formMatrix(xo))
+    let exitQ = ContentOp(name: "Q")
+    gs.applyOp(enterQ)
+    gs.applyOp(enterCm)
+    var formRes = resources
+    let own = resolveDict(d, xo.dictGet("Resources"))
+    if own.kind == coDict:
+      formRes = own
+    let bb = formBBox(xo)
+    let device = if bb.present: deviceBox(bb.rect, gs.ctm) else: bbox
+    let inner = parseContentStream(decodeCosStream(xo), d.limits)
+    acc.add(WalkedOp(op: enterQ, resources: formRes, ctm: gs.ctm,
+      bbox: bbox, hasBBox: hasBBox, depth: depth))
+    acc.add(WalkedOp(op: enterCm, resources: formRes, ctm: gs.ctm,
+      bbox: bbox, hasBBox: hasBBox, depth: depth))
+    walkInto(d, gs, inner, formRes, device, hasBBox or bb.present,
+      depth + 1, acc)
+    gs.applyOp(exitQ)
+    # The synthesised Q restores the caller's graphics state, so it
+    # belongs to the caller's resource frame, not the form's.
+    acc.add(WalkedOp(op: exitQ, resources: resources, ctm: gs.ctm,
+      bbox: bbox, hasBBox: hasBBox, depth: depth))
+
+proc walkNested*(d: var PdfDoc, index: int): seq[WalkedOp] =
+  ## Page operators with Form XObjects expanded in place. Each op
+  ## carries the resource frame, CTM and (inside a form) the device-space
+  ## BBox in effect where it ran.
+  ##
+  ## A form with no /Resources inherits the page's frame, per spec; that
+  ## is common and must not be an error. A `Do` naming an XObject that is
+  ## neither /Form nor /Image is passed through, since image collection
+  ## handles those and other subtypes have no content to interpret.
+  let pageRes = d.pageResources(index)
+  var gs = initGState()
+  let ops = parseContentStream(d.pageContentStream(index), d.limits)
+  walkInto(d, gs, ops, pageRes, [0.0, 0.0, 0.0, 0.0], false, 0, result)
