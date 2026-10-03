@@ -1,8 +1,8 @@
 ## High-level writer: pages, fonts, text flow, images, metadata.
 ##
 ## Core round-trips use the vendored CJK micro font (self-contained);
-## the DejaVu sentence case runs when the sibling harfbuzz checkout is
-## present. Image fixtures are generated with libvips at test time.
+## the DejaVu sentence case uses the vendored full DejaVuSans. Image
+## fixtures are generated with libvips at test time.
 import std/os
 import std/strutils
 import std/tables
@@ -13,7 +13,7 @@ import ../src/opendocs/pdf/fontembed
 
 const
   Micro = "tests/data/fonts/cjk-cff-micro.otf"
-  DejaVuPath = "../harfbuzz/tests/data/DejaVuSans.ttf"
+  DejaVuPath = "tests/data/fonts/DejaVuSans.ttf"
 
 proc microPdf(): Pdf =
   newPdf(readFile(Micro), "NotoSansJP")
@@ -162,22 +162,21 @@ test "loadFont upgrades the default body":
 
 test "builtin body mixes with an embedded heading":
   if not fileExists(DejaVuPath):
-    echo "no sibling harfbuzz checkout; mixed fonts skipped"
-  else:
-    var doc = newPdf()
-    defer: doc.close()
-    doc.loadFont("head", DejaVuPath)
-    doc.setFont("head", 18.0)
-    doc.heading("Hello writer")
-    doc.setFont("body", 12.0)
-    doc.paragraph("Back to builtin Helvetica.")
-    var d = openDoc(doc.build())
-    var t = ""
-    for p in 0 ..< d.pageCount():
-      for r in d.extractText(p):
-        t.add(r.text)
-    check "Hello writer" in t
-    check "Back to builtin Helvetica." in t
+    skip
+  var doc = newPdf()
+  defer: doc.close()
+  doc.loadFont("head", DejaVuPath)
+  doc.setFont("head", 18.0)
+  doc.heading("Hello writer")
+  doc.setFont("body", 12.0)
+  doc.paragraph("Back to builtin Helvetica.")
+  var d = openDoc(doc.build())
+  var t = ""
+  for p in 0 ..< d.pageCount():
+    for r in d.extractText(p):
+      t.add(r.text)
+  check "Hello writer" in t
+  check "Back to builtin Helvetica." in t
 
 test "missing font fails loudly":
   expect(PdfError):
@@ -228,18 +227,17 @@ test "save writes a readable file":
 
 test "dejaVu sentence round-trips":
   if not fileExists(DejaVuPath):
-    echo "no sibling harfbuzz checkout; dejavu sentence skipped"
-  else:
-    var doc = newPdf(DejaVuPath)
-    defer: doc.close()
-    doc.heading("Hello writer")
-    doc.paragraph("The quick brown fox jumps over the lazy dog.")
-    doc.textAt("absolute", 72.0, 72.0)
-    var d = openDoc(doc.build())
-    var t = ""
-    for p in 0 ..< d.pageCount():
-      for r in d.extractText(p):
-        t.add(r.text)
-    check "Hello writer" in t
-    check "quick brown fox" in t
-    check "absolute" in t
+    skip
+  var doc = newPdf(DejaVuPath)
+  defer: doc.close()
+  doc.heading("Hello writer")
+  doc.paragraph("The quick brown fox jumps over the lazy dog.")
+  doc.textAt("absolute", 72.0, 72.0)
+  var d = openDoc(doc.build())
+  var t = ""
+  for p in 0 ..< d.pageCount():
+    for r in d.extractText(p):
+      t.add(r.text)
+  check "Hello writer" in t
+  check "quick brown fox" in t
+  check "absolute" in t

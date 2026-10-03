@@ -3,7 +3,7 @@ import std/os
 import ../src/opendocs/pdf
 import libvips/api
 
-const DejaVuPath = "../harfbuzz/tests/data/DejaVuSans.ttf"
+const DejaVuPath = "tests/data/fonts/DejaVuSans.ttf"
 const Micro = "tests/data/fonts/cjk-cff-micro.otf"
 
 var doc =

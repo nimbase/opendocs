@@ -19,7 +19,7 @@ let cnum = b.addContentStream(
   "BT /F1 24 Tf 72 720 Td (Hello writer) Tj ET")
 discard b.addPage(612.0, 792.0, cnum, res)
 
-const DejaVuPath = "../harfbuzz/tests/data/DejaVuSans.ttf"
+const DejaVuPath = "tests/data/fonts/DejaVuSans.ttf"
 if fileExists(DejaVuPath):
   let prog = readFile(DejaVuPath)
   var sf = openShapedFont(prog)
@@ -35,7 +35,7 @@ if fileExists(DejaVuPath):
   discard b.addPage(612.0, 792.0, ecnum, fontResources(fonts))
   echo "embedded subset: full ", prog.len, " bytes"
 else:
-  echo "no sibling harfbuzz checkout; embedded-font page skipped"
+  echo "vendored ", DejaVuPath, " missing; embedded-font page skipped"
 
 const CjkMicro = "tests/data/fonts/cjk-cff-micro.otf"
 if fileExists(CjkMicro):

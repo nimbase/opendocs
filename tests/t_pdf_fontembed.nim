@@ -1,9 +1,9 @@
 ## Writer-side font pipeline: measure, subset, embed, draw, wrap.
 ##
-## The font program is the full DejaVuSans from the sibling harfbuzz
-## checkout when present; otherwise our own m3b_text.pdf fixture
-## (embedded subset holding only A, B, C) covers the same paths with
-## ABC-only text.
+## The font program is the full vendored DejaVuSans
+## (tests/data/fonts/DejaVuSans.ttf); otherwise our own m3b_text.pdf
+## fixture (embedded subset holding only A, B, C) covers the same paths
+## with ABC-only text.
 ##
 ## CID micro-fonts under tests/data/fonts (self-contained, no system
 ## fonts): cjk-cff-micro.otf is 6 glyphs (A, X, あ, 日, 本, 語)
@@ -32,7 +32,7 @@ import ../src/opendocs/pdf/gstate
 
 const
   TextPdf = "tests/data/pdf/m3b_text.pdf"
-  DejaVuPath = "../harfbuzz/tests/data/DejaVuSans.ttf"
+  DejaVuPath = "tests/data/fonts/DejaVuSans.ttf"
 
 proc subsetProgram(): string =
   var d = openDoc(readFile(TextPdf))
@@ -45,6 +45,8 @@ proc subsetProgram(): string =
   loadFontBytes(font, d)
 
 proc fontProgram(): string =
+  ## Vendored full DejaVuSans; the m3b fixture subset is only a fallback
+  ## so an absent vendored file degrades rather than crashing setup.
   if fileExists(DejaVuPath):
     readFile(DejaVuPath)
   else:
@@ -104,17 +106,16 @@ test "subset keeps used glyphs":
   check sf.nominalGlyph(uint32('A')) != 0
 
 test "full DejaVu subset is tiny":
-  if fileExists(DejaVuPath):
-    let full = readFile(DejaVuPath)
-    check full.len > 500_000
-    let sub = subsetFont(full, runesOf("Hello writer"))
-    check sub.len > 0
-    check sub.len < 50_000
-    var sf = openShapedFont(sub)
-    defer: close(sf)
-    check sf.nominalGlyph(uint32('H')) != 0
-  else:
-    echo "no sibling harfbuzz checkout; full-font subset skipped"
+  if not fileExists(DejaVuPath):
+    skip
+  let full = readFile(DejaVuPath)
+  check full.len > 500_000
+  let sub = subsetFont(full, runesOf("Hello writer"))
+  check sub.len > 0
+  check sub.len < 50_000
+  var sf = openShapedFont(sub)
+  defer: close(sf)
+  check sf.nominalGlyph(uint32('H')) != 0
 
 proc embeddedDemo(): string =
   let t = demoText()
@@ -199,35 +200,31 @@ proc cidTexts(pdf: string): seq[string] =
 
 test "cid mixed scripts round-trip":
   if not fileExists(DejaVuPath):
-    echo "no sibling harfbuzz checkout; cid scripts skipped"
-  else:
-    let t = "αβγ Жж →☺"
-    check cidTexts(cidDemoBytes(readFile(DejaVuPath), "DejaVuSans",
-      t).pdf) == @[t]
+    skip
+  let t = "αβγ Жж →☺"
+  check cidTexts(cidDemoBytes(readFile(DejaVuPath), "DejaVuSans",
+    t).pdf) == @[t]
 
 test "cid ligature maps to two runes":
   if not fileExists(DejaVuPath):
-    echo "no sibling harfbuzz checkout; cid ligature skipped"
-  else:
-    check cidTexts(cidDemoBytes(readFile(DejaVuPath), "DejaVuSans",
-      "fi").pdf) == @["fi"]
+    skip
+  check cidTexts(cidDemoBytes(readFile(DejaVuPath), "DejaVuSans",
+    "fi").pdf) == @["fi"]
 
 test "cid astral emoji round-trips":
   if not fileExists(DejaVuPath):
-    echo "no sibling harfbuzz checkout; cid astral skipped"
-  else:
-    let t = "😀"
-    check cidTexts(cidDemoBytes(readFile(DejaVuPath), "DejaVuSans",
-      t).pdf) == @[t]
+    skip
+  let t = "😀"
+  check cidTexts(cidDemoBytes(readFile(DejaVuPath), "DejaVuSans",
+    t).pdf) == @[t]
 
 test "cid kern emits TJ and still round-trips":
   if not fileExists(DejaVuPath):
-    echo "no sibling harfbuzz checkout; cid kern skipped"
-  else:
-    let (pdf, content) = cidDemoBytes(readFile(DejaVuPath),
-      "DejaVuSans", "AV")
-    check " TJ" in content # A kerns -131 under V in DejaVu
-    check cidTexts(pdf) == @["AV"]
+    skip
+  let (pdf, content) = cidDemoBytes(readFile(DejaVuPath),
+    "DejaVuSans", "AV")
+  check " TJ" in content # A kerns -131 under V in DejaVu
+  check cidTexts(pdf) == @["AV"]
 
 test "cid cjk micro font round-trips":
   let t = "日本語あAX"
@@ -267,42 +264,39 @@ test "cid structures pin correctly":
 
 test "cid ttf descendant is CIDFontType2":
   if not fileExists(DejaVuPath):
-    echo "no sibling harfbuzz checkout; cid type2 skipped"
-  else:
-    let (pdf, _) = cidDemoBytes(readFile(DejaVuPath), "DejaVuSans",
-      "αβ")
-    var d = openDoc(pdf)
-    var fonts = d.pageResources(0).dictGet("Font")
-    if fonts.kind == coRef:
-      fonts = d.resolve(fonts)
-    var font = fonts.dictGet("F9")
-    if font.kind == coRef:
-      font = d.resolve(font)
-    var cid = font.dictGet("DescendantFonts").items[0]
-    if cid.kind == coRef:
-      cid = d.resolve(cid)
-    check cid.dictGet("Subtype").name == "CIDFontType2"
+    skip
+  let (pdf, _) = cidDemoBytes(readFile(DejaVuPath), "DejaVuSans",
+    "αβ")
+  var d = openDoc(pdf)
+  var fonts = d.pageResources(0).dictGet("Font")
+  if fonts.kind == coRef:
+    fonts = d.resolve(fonts)
+  var font = fonts.dictGet("F9")
+  if font.kind == coRef:
+    font = d.resolve(font)
+  var cid = font.dictGet("DescendantFonts").items[0]
+  if cid.kind == coRef:
+    cid = d.resolve(cid)
+  check cid.dictGet("Subtype").name == "CIDFontType2"
 
 test "cid missing glyph fails loudly":
   if not fileExists(DejaVuPath):
-    echo "no sibling harfbuzz checkout; cid missing skipped"
-  else:
-    var sf = openShapedFont(readFile(DejaVuPath))
-    defer: close(sf)
-    var use = CidFontUse(fontBytes: readFile(DejaVuPath),
-      baseName: "DejaVuSans")
-    expect(PdfError):
-      discard drawCidLine(use, sf, 72.0, 720.0, "F9", 24.0, "日本")
+    skip
+  var sf = openShapedFont(readFile(DejaVuPath))
+  defer: close(sf)
+  var use = CidFontUse(fontBytes: readFile(DejaVuPath),
+    baseName: "DejaVuSans")
+  expect(PdfError):
+    discard drawCidLine(use, sf, 72.0, 720.0, "F9", 24.0, "日本")
 
 test "cid subset stays tiny":
   if not fileExists(DejaVuPath):
-    echo "no sibling harfbuzz checkout; cid tiny skipped"
-  else:
-    let full = readFile(DejaVuPath)
-    check full.len > 500_000
-    let sub = subsetFont(full, runesOf("αβγ Ж"))
-    check sub.len > 0
-    check sub.len < 50_000
+    skip
+  let full = readFile(DejaVuPath)
+  check full.len > 500_000
+  let sub = subsetFont(full, runesOf("αβγ Ж"))
+  check sub.len > 0
+  check sub.len < 50_000
 
 test "cid finalize is deterministic":
   let a = cidDemoBytes(readFile(CjkMicro), "NotoSansJP", "日本語")
