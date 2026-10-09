@@ -348,10 +348,15 @@ proc walkInto(d: var PdfDoc, gs: var GState, ops: seq[ContentOp],
     # form. The synthesised q/cm/Q are emitted into the output so a
     # consumer replaying the ops linearly lands on the same CTM this walk
     # recorded; applying them only to the local gs would make WalkedOp.ctm
-    # disagree with what a linear replay computes.
+    # disagree with what a linear replay computes. The `Do` itself is
+    # emitted too, with the caller's frame: consumers that need the
+    # invocation (a form's own /OC entry scopes everything it draws)
+    # can see it, and the ops that follow are its expansion.
     let enterQ = ContentOp(name: "q")
     let enterCm = matrixOp(formMatrix(xo))
     let exitQ = ContentOp(name: "Q")
+    acc.add(WalkedOp(op: op, resources: resources, ctm: gs.ctm,
+      bbox: bbox, hasBBox: hasBBox, depth: depth))
     gs.applyOp(enterQ)
     gs.applyOp(enterCm)
     var formRes = resources
@@ -376,7 +381,9 @@ proc walkInto(d: var PdfDoc, gs: var GState, ops: seq[ContentOp],
 proc walkNested*(d: var PdfDoc, index: int): seq[WalkedOp] =
   ## Page operators with Form XObjects expanded in place. Each op
   ## carries the resource frame, CTM and (inside a form) the device-space
-  ## BBox in effect where it ran.
+  ## BBox in effect where it ran. A `Do` that invokes a form is emitted
+  ## with the caller's frame ahead of its expansion, so the invocation
+  ## itself (notably a form's own /OC entry) stays visible.
   ##
   ## A form with no /Resources inherits the page's frame, per spec; that
   ## is common and must not be an error. A `Do` naming an XObject that is

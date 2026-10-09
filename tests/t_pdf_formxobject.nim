@@ -66,6 +66,27 @@ test "form content is descended, not skipped":
   # The page's own text must still be there: descent adds, never replaces.
   check "Page level text" in t
 
+test "form invocations stay visible as Do ahead of their expansion":
+  # A form's own dictionary entries (notably /OC) scope everything the
+  # invocation draws, so the Do must be emitted with the caller's frame
+  # rather than swallowed by the descent.
+  var d = openDoc(readFile(FormText))
+  let ops = d.walkNested(0)
+  var at = -1
+  for i, w in ops:
+    if w.op.name == "Do" and w.op.operands.len == 1 and
+        w.op.operands[0].kind == coName and
+        w.op.operands[0].name == "Fm1":
+      at = i
+  check at >= 0
+  check ops[at].depth == 0
+  # The page frame names the form, and the expansion follows: a q, the
+  # form matrix cm, then depth-1 content.
+  check ops[at].resources.dictGet("XObject").kind != coNull
+  check ops[at + 1].op.name == "q"
+  check ops[at + 2].op.name == "cm"
+  check ops[at + 3].depth == 1
+
 test "walkNested expands more ops than the flat page stream":
   var d = openDoc(readFile(FormText))
   let flat = d.walkPageOps(0).len
