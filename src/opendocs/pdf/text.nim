@@ -11,6 +11,7 @@
 ## dictionary (/Widths, /DW plus /W); fonts without any widths fall
 ## back to 500 units with positions best-effort.
 
+import std/options
 import std/tables
 import std/unicode
 import ./types
@@ -495,6 +496,19 @@ proc showClipped(d: var PdfDoc, wo: WalkedOp, gs: var GState,
       runs.setLen(keep)
     else:
       inc keep
+
+proc showTextRun*(d: var PdfDoc, wo: WalkedOp, gs: var GState,
+    cache: var Table[string, FontDecoder], s: string): Option[TextRun] =
+  ## Decode and advance one shown string exactly as `extractText` does
+  ## (same decoder lookup, same advances, same BBox drop), returning its
+  ## run, or none when the string is empty or falls outside the
+  ## enclosing form's /BBox. Lets a caller that folds the same walked
+  ## operators attach its own per-op state (paints, clips) to each run
+  ## without reimplementing advances or decoder caching.
+  var tmp: seq[TextRun] = @[]
+  d.showClipped(wo, gs, cache, s, tmp)
+  if tmp.len == 0: none(TextRun)
+  else: some(tmp[^1])
 
 proc extractText*(d: var PdfDoc, index: int): seq[TextRun] =
   ## One run per shown string with its device-space origin. Tj
