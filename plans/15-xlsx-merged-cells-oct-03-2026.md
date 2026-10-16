@@ -37,16 +37,15 @@ type
     first*: int           ## row, 1-based
     last*: int            ## row
     firstCol*, lastCol*: int  ## 1-based
-    value*: string        ## resolved from the anchor cell
-    kind*: string         ## mergeCell / mergeCellRef
+  value*: string        ## resolved from the anchor cell
 
 proc getMergeCells*(f: XlsxFile, sheet: string): seq[XlsxMerge]
 proc isMerged*(f: XlsxFile, sheet: string, cell: string): bool
 ```
 
 - `<mergeCells count="n">` holds `<mergeCell ref="A1:B2"/>`.
-  `mergeCellRef` (`sqref` on other sheets) is a rarer form; parse it and
-  set `kind` rather than rejecting the file.
+  `CT_MergeCells` contains only `mergeCell` children, so there is no separate
+  `mergeCellRef` form to support.
 - Anchors need not be top-left. Excel writes the anchor in the first cell
   and empties the rest, but a file may store the value in any covered
   cell. Resolve by scanning the span for the first non-empty stored value
@@ -183,12 +182,13 @@ does it under pressure, so it is not rare.
 
 ## Phases
 
-1. **P1 merges.** `XlsxMerge`, `getMergeCells`, `isMerged`, merge-aware
-   `getCellValue`/`getCellType`. Unblocks the plan 05 requirement.
-2. **P2 geometry getters.** Trivial, and they close three
-   parsed-but-unreachable fields. `<cols>` parsing included.
-3. **P3 defined names.** Needed by calc.
-4. **P4 hyperlinks.** Independent of the rest.
+1. **P1 merges: done.** `XlsxMerge`, `getMergeCells`, `isMerged`,
+   merge-aware `getCellValue`/`getCellType`. Unblocks the plan 05
+   requirement.
+2. **P2 geometry getters: done.** They close three parsed-but-unreachable
+   fields. `<cols>` parsing included.
+3. **P3 defined names: done.** Needed by calc.
+4. **P4 hyperlinks: done.** Independent of the rest.
 5. **P5 shared formulas.** After plan 20's tokenizer; listed here so the
    dependency is not lost.
 
@@ -196,7 +196,6 @@ does it under pressure, so it is not rare.
 
 - `merge_basic.xlsx`: 2x2 and 1x3 merges, values at anchors.
 - `merge_offaxis.xlsx`: merge whose value sits in a non-anchor cell.
-- `merge_ref.xlsx`: `mergeCellRef` form.
 - `merge_empty.xlsx`: merge with no value anywhere in the span.
 - `merge_overlap.xlsx`: overlapping ranges, which is invalid but occurs.
 - `defined_names.xlsx`: workbook-scoped, two sheet-local with a name
@@ -206,7 +205,8 @@ does it under pressure, so it is not rare.
 - `hyperlinks.xlsx`: external rel, internal `location`, display and
   tooltip, and a `HYPERLINK()` formula cell for contrast.
 - `cols.xlsx`: ranged `<cols>` entries with overlaps, `bestFit`,
-  `outlineLevel`, default width absent.
+  `outlineLevel`, explicit defaults on one sheet and absent geometry on
+  another.
 - `shared_formula.xlsx`: shared formula spanning rows and columns, with a
   cross-sheet reference in the anchor.
 

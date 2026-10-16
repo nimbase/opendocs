@@ -83,6 +83,98 @@ proc mergeAnchor(s: XlsxSheet, m: XlsxMerge,
         return (true, c)
   (false, Cell())
 
+proc reqIntAttr(node: XmlNode, name, part, what: string): int =
+  ## Required integer attribute. Unlike `intAttr`, malformed values raise
+  ## instead of falling back to a default.
+  let raw = optAttr(node, name)
+  if raw == "":
+    raise newException(XlsxError, "missing " & what & " in " & part)
+  try: parseInt(raw)
+  except ValueError:
+    raise newException(XlsxError, "bad " & what & " in " & part & ": " & raw)
+
+proc optFloatAttr(node: XmlNode, name: string): tuple[present: bool,
+    value: float] =
+  ## Optional floating-point attribute. Malformed values raise; absent
+  ## values are reported rather than defaulted.
+  let raw = optAttr(node, name)
+  if raw == "": return (false, 0.0)
+  try: (true, parseFloat(raw))
+  except ValueError:
+    raise newException(ValueError, "bad " & name & " attribute: " & raw)
+
+proc optIntAttr(node: XmlNode, name: string): tuple[present: bool,
+    value: int] =
+  ## Optional integer attribute with the same malformed-value behavior.
+  let raw = optAttr(node, name)
+  if raw == "": return (false, 0)
+  try: (true, parseInt(raw))
+  except ValueError:
+    raise newException(ValueError, "bad " & name & " attribute: " & raw)
+
+proc parseCol(colNode: XmlNode, part: string): XlsxCol =
+  ## One `<col>` range. Overlapping file entries are preserved; getters
+  ## apply last-wins semantics.
+  let min = reqIntAttr(colNode, "min", part, "column min")
+  let max = reqIntAttr(colNode, "max", part, "column max")
+  if min < 1 or max < 1 or min > XlsxMaxCols or max > XlsxMaxCols:
+    raise newException(XlsxError, "column range out of range in " & part &
+      ": " & $min & "-" & $max)
+  if min > max:
+    raise newException(XlsxError, "bad column range in " & part & ": " &
+      $min & "-" & $max)
+  let (hasWidth, width) =
+    try: optFloatAttr(colNode, "width")
+    except ValueError as e:
+      raise newException(XlsxError, e.msg & " in " & part)
+  let (hasOutline, outline) =
+    try: optIntAttr(colNode, "outlineLevel")
+    except ValueError as e:
+      raise newException(XlsxError, e.msg & " in " & part)
+  if hasOutline and (outline < 0 or outline > 7):
+    raise newException(XlsxError, "bad outlineLevel in " & part & ": " &
+      $outline)
+  XlsxCol(min: min, max: max, width: width, hasWidth: hasWidth,
+    hidden: boolAttr(colNode, "hidden"),
+    bestFit: boolAttr(colNode, "bestFit"),
+    customWidth: boolAttr(colNode, "customWidth"),
+    outlineLevel: if hasOutline: outline else: 0,
+    collapsed: boolAttr(colNode, "collapsed"))
+
+proc parseSheetFormatPr(formatNode: XmlNode, part: string): tuple[
+    hasDefaultWidth: bool, defaultWidth: float, hasBaseWidth: bool,
+    baseWidth: int] =
+  ## Sheet defaults used only when no explicit column width matches.
+  if formatNode == nil: return (false, 0.0, false, 0)
+  let (hasDefault, defaultWidth) =
+    try: optFloatAttr(formatNode, "defaultColWidth")
+    except ValueError as e:
+      raise newException(XlsxError, e.msg & " in " & part)
+  let (hasBase, baseWidth) =
+    try: optIntAttr(formatNode, "baseColWidth")
+    except ValueError as e:
+      raise newException(XlsxError, e.msg & " in " & part)
+  (hasDefault, defaultWidth, hasBase, baseWidth)
+
+proc sheetRelsPath(part: string): string =
+  ## `xl/worksheets/sheet1.xml` -> `xl/worksheets/_rels/sheet1.xml.rels`.
+  let slash = part.rfind('/')
+  if slash < 0: "_rels/" & part & ".rels"
+  else: part[0 .. slash] & "_rels/" & part[slash + 1 .. ^1] & ".rels"
+
+proc hyperlinkTarget(f: XlsxFile, part, rid: string): string =
+  ## External hyperlink target resolved through the sheet's relationships.
+  ## The target is returned verbatim: package-path resolution is for package
+  ## parts, not absolute URLs. Missing rels or an unresolvable ID yields an
+  ## empty target because a dangling link is not fatal to the workbook.
+  let relsNode = readXmlPart(f, sheetRelsPath(part))
+  if relsNode == nil: return ""
+  for r in readRels(relsNode):
+    if r.id == rid:
+      if r.relType.endsWith("/hyperlink"): return r.target
+      return ""
+  ""
+
 proc parseSheet(f: XlsxFile, name: string): XlsxSheet =
   ## Parse and cache one sheet. Chartsheets (non-`worksheet` roots) fail
   ## loudly; chartsheet support is a later phase.
@@ -116,6 +208,17 @@ proc parseSheet(f: XlsxFile, name: string): XlsxSheet =
         posCol = c.col # explicit r jumps the running position
         row.cells.add c
       result.rows.add row
+  let formatNode = firstChildL(root, "sheetFormatPr")
+  let (hasDefaultWidth, defaultWidth, hasBaseWidth, baseWidth) =
+    parseSheetFormatPr(formatNode, part)
+  result.hasDefaultColWidth = hasDefaultWidth
+  result.defaultColWidth = defaultWidth
+  result.hasBaseColWidth = hasBaseWidth
+  result.baseColWidth = baseWidth
+  let colsNode = firstChildL(root, "cols")
+  if colsNode != nil:
+    for colNode in childElemsL(colsNode, "col"):
+      result.cols.add parseCol(colNode, part)
   let mcNode = firstChildL(root, "mergeCells")
   if mcNode != nil:
     for kid in childElemsL(mcNode, "mergeCell"):
@@ -132,6 +235,20 @@ proc parseSheet(f: XlsxFile, name: string): XlsxSheet =
       if hasAnchor:
         result.merges[i].anchorRow = anchor.row
         result.merges[i].anchorCol = anchor.col
+  let linksNode = firstChildL(root, "hyperlinks")
+  if linksNode != nil:
+    for linkNode in childElemsL(linksNode, "hyperlink"):
+      let refStr = optAttr(linkNode, "ref")
+      if refStr == "":
+        raise newException(XlsxError, "hyperlink without ref in " & part)
+      discard parseMergeBounds(refStr, part)
+      let rid = optAttr(linkNode, "r:id")
+      var target = ""
+      if rid != "": target = hyperlinkTarget(f, part, rid)
+      result.hyperlinks.add XlsxHyperlink(cell: refStr, target: target,
+        location: optAttr(linkNode, "location"),
+        display: optAttr(linkNode, "display"),
+        tooltip: optAttr(linkNode, "tooltip"))
 
 proc getSheet*(f: XlsxFile, name: string): XlsxSheet =
   ## Parsed sheet by (any-case) name, cached after first parse.
@@ -171,6 +288,31 @@ proc mergedCell(s: XlsxSheet, col, row: int): tuple[
   let (hasAnchor, anchor) = findCell(s, m.anchorCol, m.anchorRow)
   if hasAnchor: (true, anchor) else: (true, Cell())
 
+proc findSheetRow(s: XlsxSheet, row: int): tuple[found: bool, sheetRow: XlsxRow] =
+  ## Exact row record. Absent rows are valid and use default geometry.
+  for r in s.rows:
+    if r.r == row: return (true, r)
+  (false, XlsxRow())
+
+proc findSheetCol(cols: seq[XlsxCol], col: int): tuple[found: bool,
+    sheetCol: XlsxCol] =
+  ## Last file-ordered `<col>` range containing the column.
+  var hit = false
+  var hitCol = XlsxCol()
+  for c in cols:
+    if col >= c.min and col <= c.max:
+      hit = true
+      hitCol = c
+  (hit, hitCol)
+
+proc hyperlinkCovers(link: XlsxHyperlink, col, row: int,
+    part: string): bool =
+  ## Stored hyperlink refs may be ranges. Covered cells report the stored
+  ## reference rather than an expanded span.
+  let (firstCol, firstRow, lastCol, lastRow) =
+    parseMergeBounds(link.cell, part)
+  col >= firstCol and col <= lastCol and row >= firstRow and row <= lastRow
+
 # ------------------------------------------------------------------ getters
 
 func getSheetList*(f: XlsxFile): seq[string] =
@@ -181,6 +323,66 @@ func getSheetMap*(f: XlsxFile): Table[int, string] =
   ## sheetId -> name for the whole workbook.
   for n in f.sheetOrder:
     result[f.sheetIds.getOrDefault(n)] = n
+
+proc getSheetDimension*(f: XlsxFile, sheet: string): string =
+  ## Stored used-range reference, `""` when absent. Malformed values raise
+  ## instead of returning a partial range.
+  let s = getSheet(f, sheet)
+  if s.dimension == "": return ""
+  discard parseMergeBounds(s.dimension, s.part)
+  s.dimension
+
+proc getRowHeight*(f: XlsxFile, sheet: string, row: int): float =
+  ## Explicit row height, or `-1` when the row or height is absent. Excelize
+  ## substitutes its default row height; this reader preserves absence so
+  ## callers can distinguish an explicit height from a default.
+  if row < 1:
+    raise newException(XlsxError, "row out of range: " & $row)
+  let (found, sheetRow) = findSheetRow(getSheet(f, sheet), row)
+  if found: sheetRow.height else: -1.0
+
+proc getRowVisible*(f: XlsxFile, sheet: string, row: int): bool =
+  ## Whether a row is visible. Absent rows are visible; only an explicit
+  ## hidden row record reports false.
+  if row < 1:
+    raise newException(XlsxError, "row out of range: " & $row)
+  let (found, sheetRow) = findSheetRow(getSheet(f, sheet), row)
+  if found: not sheetRow.hidden else: true
+
+proc getColWidth*(f: XlsxFile, sheet: string, col: int): float =
+  ## Explicit column width in one-based column index form, or `-1` when no
+  ## width is set. Unlike excelize's name-based getter, this port does not
+  ## substitute Excel's 8.43 default for absent widths.
+  if col < 1 or col > XlsxMaxCols:
+    raise newException(XlsxError, "column out of range: " & $col)
+  let s = getSheet(f, sheet)
+  let (found, sheetCol) = findSheetCol(s.cols, col)
+  if found and sheetCol.hasWidth: return sheetCol.width
+  if s.hasDefaultColWidth: return s.defaultColWidth
+  if s.hasBaseColWidth: return s.baseColWidth.float
+  -1.0
+
+proc getColVisible*(f: XlsxFile, sheet: string, col: int): bool =
+  ## Whether a column is visible. Absent columns are visible; overlapping
+  ## `<col>` ranges use the last matching entry.
+  if col < 1 or col > XlsxMaxCols:
+    raise newException(XlsxError, "column out of range: " & $col)
+  let (found, sheetCol) = findSheetCol(getSheet(f, sheet).cols, col)
+  if found: not sheetCol.hidden else: true
+
+proc getHyperlinks*(f: XlsxFile, sheet: string): seq[XlsxHyperlink] =
+  ## Hyperlinks in file order, with external targets resolved verbatim.
+  getSheet(f, sheet).hyperlinks
+
+proc getCellHyperlink*(f: XlsxFile, sheet, cellRef: string): tuple[
+    found: bool, link: XlsxHyperlink] =
+  ## Hyperlink covering a cell. Range-valued links match covered cells but
+  ## return the stored reference, not the span.
+  let (col, row) = splitCellRef(cellRef)
+  let s = getSheet(f, sheet)
+  for link in s.hyperlinks:
+    if hyperlinkCovers(link, col, row, s.part): return (true, link)
+  (false, XlsxHyperlink())
 
 proc resolveRaw*(f: XlsxFile, c: Cell): string =
   ## Phase A value resolution (excelize `getValueFrom`, raw branch):

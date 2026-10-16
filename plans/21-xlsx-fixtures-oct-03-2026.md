@@ -223,7 +223,7 @@ before the other plans rely on it.
 
 ## Phases
 
-1. **P1 the harness**, plus migrating the existing Phase B matrix.
+1. **P1 the harness: done**, plus migrating the existing Phase B matrix.
 2. **P2 the Go oracle generator**, covering `GetCellValue` and
    `CalcCellValue` at minimum.
 3. **P3 `fmt_locale_all.xlsx` and its 416-cell dump.** Before plan 16 P5,

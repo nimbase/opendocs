@@ -47,7 +47,7 @@ narrow scope, `gap` absent entirely.
 |---|---|---|---|
 | Package open / spill | `xlsx/reader.nim`, `xlsx/base.nim` | done | zip, spill thresholds, caps, `=destroy` cleanup |
 | OLE magic rejection | `xlsx/reader.nim:22` | done | encrypted/legacy packages raise `XlsxError` |
-| Workbook / sheet map | `xlsx/workbook.nim` | partial | sheet map, `date1904`; **no `calcPr`, no defined names** |
+| Workbook / sheet map | `xlsx/workbook.nim` | partial | sheet map, `date1904`, defined names; **no `calcPr`** |
 | Lazy shared strings | `xlsx/sharedstrings.nim` | done | full load on first access, guarded by `sstLoaded` |
 | Cell types | `xlsx/cell.nim` | done | all 7 `T` values plus `ctyUnset` default |
 | A1 references | `xlsx/cell.nim` | done | split/join, column conversions, raises on malformed |
@@ -58,12 +58,12 @@ narrow scope, `gap` absent entirely.
 | Styles: numFmts/cellXfs | `xlsx/styles.nim` | done | enough for formatting |
 | Styles: fonts/fills/borders | none | **gap** | deferred to plan 16 |
 | Rich text | `xlsx/sharedstrings.nim:10` | partial | runs concatenate; `<rPr>` formatting discarded |
-| Sheet dimension | `xlsx/sheet.nim:54` | partial | parsed, stored, **no getter** |
-| Row height / hidden | `xlsx/sheet.nim:66` | partial | parsed into `XlsxRow`, **no getter** |
-| Column width / hidden | none | **gap** | `<cols>` never read; no `XlsxCol` type |
-| **Merged cells** | none | **gap** | not read at all; plan 05 line 57 required it |
-| Hyperlinks | none | **gap** | `<hyperlinks>` never read |
-| Defined names | none | **gap** | `definedName` grep: 0 hits |
+| Sheet dimension | `xlsx/sheet.nim` | done | stored ref returned verbatim, malformed refs raise |
+| Row height / hidden | `xlsx/sheet.nim` | done | explicit getters; absent rows stay absent |
+| Column width / hidden | `xlsx/sheet.nim` | done | `<cols>` parsed; last matching range wins |
+| **Merged cells** | `xlsx/sheet.nim` | done | anchor-value duplication; grids stay storage-shaped |
+| Hyperlinks | `xlsx/sheet.nim` | done | external verbatim, internal locations, dangling rels benign |
+| Defined names | `xlsx/workbook.nim` | done | raw workbook-order list; precedence left to callers |
 | `calcPr` / `calcChain` | none | **gap** | both absent; tolerant skip is the plan |
 | docProps | none | **gap** | no `docprops.nim`; docx has the precedent |
 | Header/footer, page setup | none | **gap** | no `pageSetup`, `headerFooter`, `pageMargins` |
@@ -83,7 +83,7 @@ Verified state:
 |---|---|---|
 | **A** package + raw grid | DONE | DONE, confirmed |
 | **B** formatting core | DONE | DONE, confirmed; 576-cell oracle green |
-| **C** sheet extras | not started | **~10%**: 6 of 9 items absent, 3 partial |
+| **C** sheet extras | not started | **Plan 15 P1-P4 done**: merges, geometry, names, hyperlinks; shared-formula expansion pending |
 | **D** OLE subset | not started | 0%: magic rejection only, no `ole2.nim` |
 | **E** calc engine | not started, optional | 0%, and now **committed**, not optional |
 

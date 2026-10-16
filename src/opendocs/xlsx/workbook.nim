@@ -9,11 +9,12 @@
 ## `getWorksheetPath`, `workbookReader`, `getSheetMap`.
 
 type
-  XlsxRel = tuple[id, target, relType: string]
+  XlsxRel = tuple[id, target, relType, mode: string]
 
 proc readRels(node: XmlNode): seq[XlsxRel] =
   for r in childElemsL(node, "Relationship"):
-    result.add (optAttr(r, "Id"), optAttr(r, "Target"), optAttr(r, "Type"))
+    result.add (optAttr(r, "Id"), optAttr(r, "Target"), optAttr(r, "Type"),
+      optAttr(r, "TargetMode"))
 
 proc normPkgPath(t: string): string =
   ## zip-name normalization: backslashes to slashes, leading `/` off.
@@ -80,6 +81,36 @@ proc loadWorkbook(f: XlsxFile) =
     if rid != "" and relTargets.hasKey(rid):
       f.sheetParts[name] = relTargets[rid]
     # else: chartsheet/dialogsheet or dangling ref; getters report it.
+  let names = firstChildL(root, "definedNames")
+  if names != nil:
+    for dn in childElemsL(names, "definedName"):
+      let name = optAttr(dn, "name")
+      if name == "":
+        raise newException(XlsxError,
+          wbPath & " has a defined name without a name")
+      var refersTo = childText(dn)
+      if refersTo.startsWith("="): refersTo = refersTo[1 .. ^1]
+      let local = optAttr(dn, "localSheetId")
+      var scope = "Workbook"
+      if local != "":
+        let idx =
+          try: parseInt(local)
+          except ValueError:
+            raise newException(XlsxError,
+              wbPath & " has a bad localSheetId: " & local)
+        if idx < 0 or idx >= f.sheetOrder.len:
+          raise newException(XlsxError,
+            wbPath & " has a localSheetId outside workbook order: " & local)
+        scope = f.sheetOrder[idx]
+      f.definedNames.add XlsxDefinedName(name: name, refersTo: refersTo,
+        scope: scope, hidden: boolAttr(dn, "hidden"),
+        comment: optAttr(dn, "comment"))
+
+proc getDefinedNames*(f: XlsxFile): seq[XlsxDefinedName] =
+  ## Defined names in workbook order. Worksheet scope wins over workbook
+  ## scope when callers resolve collisions; that precedence is left to the
+  ## caller so writers can see the raw list.
+  f.definedNames
 
 proc resolveSheetName*(f: XlsxFile, name: string): string =
   ## Canonical sheet name (case-insensitive, excelize parity).

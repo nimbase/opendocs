@@ -28,3 +28,18 @@ the Phase B oracle suite in `tests/t_xlsx.nim`.
 timestamps. They isolate normal, reversed/off-anchor, empty, and
 overlapping merge declarations, respectively, and are consumed by
 `tests/t_xlsx_merge.nim`.
+
+`cols.xlsx` — minimal synthetic package with fixed archive timestamps. The
+`Geometry` sheet covers stored dimensions, row heights and visibility,
+overlapping column ranges, and sheet format defaults; `Bare` covers absent
+geometry. Consumed by `tests/t_xlsx_geometry.nim`.
+
+`defined_names.xlsx` — minimal synthetic package with fixed archive
+timestamps. Covers workbook and sheet-local scopes, a scope collision,
+built-in print names, and workbook-order `localSheetId` mapping. Consumed
+by `tests/t_xlsx_defined_names.nim`.
+
+`hyperlinks.xlsx` — minimal synthetic package with fixed archive
+timestamps. Covers an external relationship, an internal location, a
+dangling relationship, and a contrasting `HYPERLINK()` formula. Consumed
+by `tests/t_xlsx_hyperlinks.nim`.

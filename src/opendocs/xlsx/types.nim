@@ -54,6 +54,31 @@ type
     anchorRow*, anchorCol*: int ## first stored cell in the range, 0 = none
     value*: string ## populated by `getMergeCells`, not during parsing
 
+  XlsxDefinedName* = object
+    name*: string
+    refersTo*: string ## raw target with one leading `=` removed
+    scope*: string ## `Workbook` or the owning sheet name
+    hidden*: bool
+    comment*: string
+
+  XlsxHyperlink* = object
+    cell*: string ## stored reference, which may be a range
+    target*: string ## external URL, `""` for internal jumps
+    location*: string ## internal destination, `""` for external links
+    display*: string
+    tooltip*: string
+
+
+  XlsxCol* = object
+    min*, max*: int ## 1-based inclusive column range
+    width*: float ## explicit width; valid only when hasWidth is true
+    hasWidth*: bool
+    hidden*: bool
+    bestFit*: bool
+    customWidth*: bool
+    outlineLevel*: int
+    collapsed*: bool
+
   XlsxSheet* = object
     name*: string
     sheetId*: int
@@ -63,6 +88,12 @@ type
     dimension*: string ## used-range ref, "" = absent
     rows*: seq[XlsxRow]
     merges*: seq[XlsxMerge] ## in file order; first listed wins overlaps
+    hyperlinks*: seq[XlsxHyperlink] ## in file order
+    cols*: seq[XlsxCol] ## in file order; last matching range wins
+    defaultColWidth*: float
+    hasDefaultColWidth*: bool
+    baseColWidth*: int
+    hasBaseColWidth*: bool
 
   XlsxStylesheet* = object
     ## `xl/styles.xml` subset needed for value formatting: custom format
@@ -101,6 +132,7 @@ type
     sheetOrder*: seq[string] ## all sheets in workbook order
     sheetParts*: Table[string, string] ## canonical name -> sheet part path
     sheetIds*: Table[string, int] ## canonical name -> sheetId
+    definedNames*: seq[XlsxDefinedName] ## workbook order
     sheets*: Table[string, XlsxSheet] ## parsed-sheet cache
     sstLoaded*: bool
     sharedStrings*: seq[string]
