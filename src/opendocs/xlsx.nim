@@ -24,6 +24,7 @@ include xlsx/types
 include xlsx/base
 include xlsx/cell
 include xlsx/styles
+include xlsx/numfmttok
 include xlsx/numfmt
 include xlsx/workbook
 include xlsx/sharedstrings

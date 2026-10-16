@@ -223,7 +223,7 @@ Phase C deferral cost, and it should not survive into the shipped phase.
 
 ## Phases
 
-1. **P1 tokenizer**, with round-trip property asserted over a corpus.
+1. **P1 tokenizer: done**, with round-trip property asserted over a corpus.
 2. **P2 renderer generalization.** One renderer shared with builtin ids.
    Delete the duplicate date-code path rather than keeping both.
 3. **P3 locale resolution** mechanism plus `en-US` and 3-4 common locales
