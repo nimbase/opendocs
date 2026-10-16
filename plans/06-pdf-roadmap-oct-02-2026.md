@@ -14,9 +14,8 @@ and adds per-area plans for the work that remains.
 
 ## Locked decisions
 
-- **Milestone numbering continues.** `M1`-`M6`, `M8`-`M12` are shipped.
-  `M7` (Form XObjects) is the only milestone never implemented and becomes
-  the first workstream. New work beyond `M12` gets `M13`+ rather than
+- **Milestone numbering continues.** `M1`-`M12` are shipped, including
+  `M7` (Form XObjects). New work beyond `M12` gets `M13`+ rather than
   reusing a retired number.
 - **Tier order is fixed** (see below). Read-side correctness first,
   because the existing extractors are *silently* incomplete: text and
@@ -51,11 +50,11 @@ narrow scope, `gap` absent entirely.
 | Encryption write | `crypt.nim` | gap | no `computeO`/`computeU` forward path, no `/Encrypt` builder; `write.nim:411,463` reject encrypted input |
 | Content parsing | `content.nim` | partial | full operator tokenizing; inline-image `EI` scan is first-match heuristic |
 | Graphics state | `gstate.nim` | partial | CTM + text state only; no path, color, or `gs` state |
-| **Form XObjects** | none | **gap** | `images.nim:251` skips them; M7, plan 07 |
-| Text extraction | `text.nim` | partial | deep encoding fallback chain, CJK vertical; blind to Form XObjects |
+| **Form XObjects** | `gstate.nim` | done | `walkNested`, resource stack, `maxNestedXObject`; M7 plan removed |
+| Text extraction | `text.nim` | partial | deep encoding fallback chain, CJK vertical; nested forms handled by `walkNested` |
 | Doc text / search | `doctext.nim` | partial | lines, blocks, exact search; ASCII-only case folding |
 | Sheet / tables | `sheet.nim` | partial | whitespace-grid heuristics only, read-only |
-| Images | `images.nim`, `vipsimg.nim` | partial | 7 colorspaces; Lab raises, CCITT/JBIG2/JPX passthrough; inline images uncollected |
+| Images | `images.nim`, `vipsimg.nim` | partial | 7 colorspaces; Lab raises, CCITT/JBIG2/JPX passthrough; XObject and inline images collected |
 | Metadata read | `document.nim` | gap | `PdfDocument` exposes only `version`, `pages`, `hasEncrypt`; no `/Info`, no XMP |
 | Outlines | none | gap | no `/Outlines` reader |
 | Annotation read | `forms.nim` (incidental) | gap | `/Annots` touched only for widget plumbing and page transplant |
@@ -82,7 +81,7 @@ narrow scope, `gap` absent entirely.
 | Tier | Theme | Plan | Rationale |
 |---|---|---|---|
 | 0 | Test hermeticity | this file, bottom | 10 tests silently `echo`-skip without a sibling `harfbuzz` checkout that is not a declared dependency; CI never runs them |
-| 1 | Read-side completeness | 07, 08 | Fix silent blind spots in shipped extractors. Highest value per line written. |
+| 1 | Read-side completeness | 08 (M7 done; plan removed) | Fix silent blind spots in shipped extractors. Highest value per line written. |
 | 2 | Parser robustness | 08 | Leniency as a design principle; malformed corpus is the safety net for tier 1 |
 | 3 | Page renderer | 09 | New capability, large, but a thin libvips path exists so the cost is lower than it looks |
 | 4 | Signature completion (P4b) | 10 | Largest single block; needs a hand-rolled DER layer |
@@ -120,7 +119,6 @@ Actions:
 
 | Plan | Area | Tier |
 |---|---|---|
-| `07-pdf-form-xobjects-oct-02-2026.md` | M7 Form XObjects, nested content | 1 |
 | `08-pdf-read-side-oct-02-2026.md` | metadata, outlines, annotation read, tagged PDF, inline images | 1 |
 | `09-pdf-parser-robustness-oct-02-2026.md` | brute-force recovery, lenient xref, malformed corpus | 2 |
 | `10-pdf-render-oct-02-2026.md` | page rasterization | 3 |
