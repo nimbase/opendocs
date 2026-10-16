@@ -39,6 +39,50 @@ proc parseCell(cNode: XmlNode, posCol, posRow: int): Cell =
   let isNode = firstChildL(cNode, "is")
   if isNode != nil: result.inlineText = siText(isNode)
 
+proc parseMergeBounds(refStr, part: string): tuple[firstCol, firstRow,
+    lastCol, lastRow: int] =
+  ## Normalize `A1:B2`, `$A$1:$B$2`, reversed ranges, and single cells.
+  ## Bounds stay inside the SpreadsheetML grid; invalid ranges raise.
+  let ends = refStr.split(':')
+  if ends.len < 1 or ends.len > 2:
+    raise newException(XlsxError, "bad merge range in " & part & ": " &
+      refStr)
+  let last = if ends.len == 2: ends[1] else: ends[0]
+  let (startCol, startRow) =
+    try: splitCellRef(ends[0])
+    except XlsxError as e:
+      raise newException(XlsxError, "bad merge range in " & part & ": " &
+        refStr & " (" & e.msg & ")")
+  let (endCol, endRow) =
+    try: splitCellRef(last)
+    except XlsxError as e:
+      raise newException(XlsxError, "bad merge range in " & part & ": " &
+        refStr & " (" & e.msg & ")")
+  (min(startCol, endCol), min(startRow, endRow),
+    max(startCol, endCol), max(startRow, endRow))
+
+proc mergeAnchor(s: XlsxSheet, m: XlsxMerge,
+    prior: seq[XlsxMerge] = @[]): tuple[found: bool, cell: Cell] =
+  ## Stored cell supplying a merged range's value. Excel keeps the value in
+  ## the top-left cell, but malformed files may store it elsewhere, so scan
+  ## the range in row-major order rather than assuming the first corner.
+  ## Cells already claimed by an earlier overlapping merge are skipped, so
+  ## file order decides overlaps.
+  for r in s.rows:
+    if r.r < m.firstRow or r.r > m.lastRow: continue
+    for c in r.cells:
+      if c.col < m.firstCol or c.col > m.lastCol: continue
+      var claimed = false
+      for p in prior:
+        if c.col >= p.firstCol and c.col <= p.lastCol and
+            r.r >= p.firstRow and r.r <= p.lastRow:
+          claimed = true
+          break
+      if claimed: continue
+      if c.raw != "" or c.inlineText != "" or c.hasFormula:
+        return (true, c)
+  (false, Cell())
+
 proc parseSheet(f: XlsxFile, name: string): XlsxSheet =
   ## Parse and cache one sheet. Chartsheets (non-`worksheet` roots) fail
   ## loudly; chartsheet support is a later phase.
@@ -54,24 +98,40 @@ proc parseSheet(f: XlsxFile, name: string): XlsxSheet =
   let dim = firstChildL(root, "dimension")
   if dim != nil: result.dimension = optAttr(dim, "ref")
   let data = firstChildL(root, "sheetData")
-  if data == nil: return
-  var posRow = 0
-  for rNode in childElemsL(data, "row"):
-    var rn = intAttr(rNode, "r", 0)
-    if rn <= 0:
-      rn = posRow + 1 # absent r: positional (excelize parity)
-    if rn < 1 or rn > XlsxMaxRows:
-      raise newException(XlsxError, "row out of range in sheet")
-    posRow = rn
-    var row = XlsxRow(r: rn, hidden: boolAttr(rNode, "hidden"),
-      height: floatAttr(rNode, "ht", -1.0))
-    var posCol = 0
-    for cNode in childElemsL(rNode, "c"):
-      posCol += 1
-      let c = parseCell(cNode, posCol, rn)
-      posCol = c.col # explicit r jumps the running position
-      row.cells.add c
-    result.rows.add row
+  if data != nil:
+    var posRow = 0
+    for rNode in childElemsL(data, "row"):
+      var rn = intAttr(rNode, "r", 0)
+      if rn <= 0:
+        rn = posRow + 1 # absent r: positional (excelize parity)
+      if rn < 1 or rn > XlsxMaxRows:
+        raise newException(XlsxError, "row out of range in sheet")
+      posRow = rn
+      var row = XlsxRow(r: rn, hidden: boolAttr(rNode, "hidden"),
+        height: floatAttr(rNode, "ht", -1.0))
+      var posCol = 0
+      for cNode in childElemsL(rNode, "c"):
+        posCol += 1
+        let c = parseCell(cNode, posCol, rn)
+        posCol = c.col # explicit r jumps the running position
+        row.cells.add c
+      result.rows.add row
+  let mcNode = firstChildL(root, "mergeCells")
+  if mcNode != nil:
+    for kid in childElemsL(mcNode, "mergeCell"):
+      let refStr = optAttr(kid, "ref")
+      if refStr == "":
+        raise newException(XlsxError, "merge cell without ref in " & part)
+      let (firstCol, firstRow, lastCol, lastRow) =
+        parseMergeBounds(refStr, part)
+      result.merges.add XlsxMerge(`ref`: refStr, firstRow: firstRow,
+        lastRow: lastRow, firstCol: firstCol, lastCol: lastCol)
+    for i in 0 ..< result.merges.len:
+      let (hasAnchor, anchor) = mergeAnchor(result, result.merges[i],
+        result.merges[0 ..< i])
+      if hasAnchor:
+        result.merges[i].anchorRow = anchor.row
+        result.merges[i].anchorCol = anchor.col
 
 proc getSheet*(f: XlsxFile, name: string): XlsxSheet =
   ## Parsed sheet by (any-case) name, cached after first parse.
@@ -89,6 +149,27 @@ proc findCell*(s: XlsxSheet, col, row: int): tuple[found: bool, cell: Cell] =
     for c in r.cells:
       if c.col == col: return (true, c)
   (false, Cell())
+
+proc mergeAt(s: XlsxSheet, col, row: int): tuple[found: bool, merge: XlsxMerge] =
+  ## First-listed merge covering a coordinate. Overlapping declarations are
+  ## malformed but occur; listing order decides instead of a crash.
+  for m in s.merges:
+    if col >= m.firstCol and col <= m.lastCol and
+        row >= m.firstRow and row <= m.lastRow:
+      return (true, m)
+  (false, XlsxMerge())
+
+proc mergedCell(s: XlsxSheet, col, row: int): tuple[
+    covered: bool, cell: Cell] =
+  ## Anchor cell for a merge-covered coordinate. Covered cells redirect to
+  ## the recorded anchor even when they physically store another value: a
+  ## stored non-anchor value is malformed, while the merge declaration is
+  ## the authoritative layout.
+  let (found, m) = mergeAt(s, col, row)
+  if not found: return (false, Cell())
+  if m.anchorCol <= 0 or m.anchorRow <= 0: return (true, Cell())
+  let (hasAnchor, anchor) = findCell(s, m.anchorCol, m.anchorRow)
+  if hasAnchor: (true, anchor) else: (true, Cell())
 
 # ------------------------------------------------------------------ getters
 
@@ -181,24 +262,54 @@ proc getCols*(f: XlsxFile, sheet: string): seq[seq[string]] =
     while result[j].len > 0 and result[j][^1] == "":
       discard result[j].pop()
 
+proc getMergeCells*(f: XlsxFile, sheet: string): seq[XlsxMerge] =
+  ## Merged ranges in file order. `value` is resolved from the anchor cell
+  ## when a stored anchor exists. `getRows` intentionally stays
+  ## storage-shaped and does not duplicate these values.
+  let s = getSheet(f, sheet)
+  for m in s.merges:
+    var item = m
+    if m.anchorCol > 0 and m.anchorRow > 0:
+      let (hasAnchor, anchor) = findCell(s, m.anchorCol, m.anchorRow)
+      if hasAnchor:
+        item.value = cellDisplayValue(f, anchor)
+    result.add item
+
+proc isMerged*(f: XlsxFile, sheet, cellRef: string): bool =
+  ## Whether a cell lies inside any declared merged range.
+  let (col, row) = splitCellRef(cellRef)
+  let (found, _) = mergeAt(getSheet(f, sheet), col, row)
+  found
+
 proc getCellValue*(f: XlsxFile, sheet, cellRef: string): string =
   ## Cell value with number formatting applied ("", when the cell is
   ## absent). Shared strings are resolved; `rawCellValue` opt returns
-  ## stored values verbatim.
+  ## stored values verbatim. Merge-covered cells return their anchor value.
   let (col, row) = splitCellRef(cellRef)
   let s = getSheet(f, sheet)
+  let (covered, anchor) = mergedCell(s, col, row)
+  if covered: return cellDisplayValue(f, anchor)
   let (found, c) = findCell(s, col, row)
   if not found: return ""
   cellDisplayValue(f, c)
 
 proc getCellType*(f: XlsxFile, sheet, cellRef: string): CellType =
   ## Cell data type; `ctyUnset` when the cell is absent or untyped.
+  ## Merge-covered cells return their anchor type.
   let (col, row) = splitCellRef(cellRef)
-  let (found, c) = findCell(getSheet(f, sheet), col, row)
+  let s = getSheet(f, sheet)
+  let (covered, anchor) = mergedCell(s, col, row)
+  if covered: return anchor.cellType
+  let (found, c) = findCell(s, col, row)
   if not found: ctyUnset else: c.cellType
 
 proc getCellFormula*(f: XlsxFile, sheet, cellRef: string): string =
-  ## Formula text ("", when the cell has none).
+  ## Formula text ("", when the cell has none). Merge-covered cells return
+  ## their anchor formula.
   let (col, row) = splitCellRef(cellRef)
-  let (found, c) = findCell(getSheet(f, sheet), col, row)
+  let s = getSheet(f, sheet)
+  let (covered, anchor) = mergedCell(s, col, row)
+  if covered:
+    return if anchor.hasFormula: anchor.formula.content else: ""
+  let (found, c) = findCell(s, col, row)
   if not found or not c.hasFormula: "" else: c.formula.content

@@ -47,6 +47,13 @@ type
     hidden*: bool
     height*: float ## -1 = absent
 
+  XlsxMerge* = object
+    `ref`*: string ## range as written (`A1:B2` or `A1`)
+    firstRow*, lastRow*: int ## normalized 1-based row bounds
+    firstCol*, lastCol*: int ## normalized 1-based column bounds
+    anchorRow*, anchorCol*: int ## first stored cell in the range, 0 = none
+    value*: string ## populated by `getMergeCells`, not during parsing
+
   XlsxSheet* = object
     name*: string
     sheetId*: int
@@ -55,6 +62,7 @@ type
     parsed*: bool
     dimension*: string ## used-range ref, "" = absent
     rows*: seq[XlsxRow]
+    merges*: seq[XlsxMerge] ## in file order; first listed wins overlaps
 
   XlsxStylesheet* = object
     ## `xl/styles.xml` subset needed for value formatting: custom format

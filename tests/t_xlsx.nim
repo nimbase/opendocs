@@ -1,9 +1,10 @@
 ## Phase A spreadsheet reader tests: synthetic packages covering every
 ## Phase A cell kind, grid edge cases, A1 utils, and failure modes.
 
-import std/[unittest, tables, os, strutils]
+import std/[unittest, tables, os]
 import opendocs/xlsx
 import opendocs/zip
+import xlsx_oracle
 
 const
   NsMain = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -263,42 +264,17 @@ suite "phase B oracle matrix":
   const matrixFmts = [0, 1, 2, 3, 4, 9, 10, 11, 12, 13, 14, 15, 16, 17,
     18, 19, 20, 21, 22, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49]
 
-  proc unquoteGo(s: string): string =
-    ## Minimal Go %q unquote (dump contains no exotic escapes).
-    result = ""
-    var i = 0
-    assert s[0] == '"' and s[^1] == '"'
-    let b = s[1 .. ^2]
-    while i < b.len:
-      if b[i] == '\\' and i + 1 < b.len:
-        case b[i + 1]
-        of '"': result &= '"'
-        of '\\': result &= '\\'
-        of 'n': result &= '\n'
-        of 't': result &= '\t'
-        else: result &= b[i + 1]
-        i += 2
-      else:
-        result &= b[i]
-        i += 1
-
   test "excelize-produced matrix matches the GetCellValue dump":
-    var expected = initTable[(int, int), string]()
-    for line in readFile(
-        "tests/fixtures/xlsx/phase_b_matrix.txt").splitLines():
-      if line.strip() == "" or line.startsWith("bool"): continue
-      let a = line.find('|')
-      let b = line.find('|', a + 1)
-      expected[(parseInt(line[0 ..< a]), parseInt(line[a + 1 ..< b]))] =
-        unquoteGo(line[b + 1 .. ^1])
-    check expected.len == 32 * 18
+    let dump = loadCoordinateDump(
+      "tests/fixtures/xlsx/phase_b_matrix.txt", "Sheet1", "GetCellValue")
+    dump.requireCheckCount(32 * 18, "phase B matrix")
     let f = openXlsx("tests/fixtures/xlsx/phase_b_matrix.xlsx")
     defer: f.closeXlsx()
     for j, id in matrixFmts:
       let col = columnNumberToName(j + 2)
       for i in 0 ..< 18:
         check f.getCellValue("Sheet1", col & $(i + 2)) ==
-          expected[(id, i)]
+          dump.valueAt("Sheet1", $id & ":" & $i, "GetCellValue")
 
   test "bools under a date style stay boolean":
     let f = openXlsx("tests/fixtures/xlsx/phase_b_matrix.xlsx")

@@ -22,3 +22,9 @@ are the reference implementation's verbatim output.
 `phase_b_matrix.txt` — the matching `GetCellValue` dump
 (`fmtId|rowIdx|value`, rowIdx 0-based over the 18 values), consumed by
 the Phase B oracle suite in `tests/t_xlsx.nim`.
+
+`merge_basic.xlsx`, `merge_offaxis.xlsx`, `merge_empty.xlsx`, and
+`merge_overlap.xlsx` — minimal synthetic packages with fixed archive
+timestamps. They isolate normal, reversed/off-anchor, empty, and
+overlapping merge declarations, respectively, and are consumed by
+`tests/t_xlsx_merge.nim`.

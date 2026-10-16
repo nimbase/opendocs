@@ -1,5 +1,14 @@
 # xlsx / xlsm / xltx / xltm / xlam readers (plan)
 
+> **Status of record: `14-xlsx-roadmap-oct-03-2026.md`.**
+> The phase ledger below is retained as the design record and is **stale**
+> in three places: Phase C is ~10% shipped rather than unstarted, Phase E
+> (calc engine) is now committed with full parity as the target rather than
+> optional, and Phase D stays as specified. See the roadmap's "Corrections
+> to plan 05's phase ledger" for the item-by-item audit, including the
+> unmet merged-cell requirement at line 57 and the unenforced
+> `MaxXlsxXmlDepth` constant.
+
 Reference: `nimbase/references/excelize` (Go). Template: `src/opendocs/docx/`
 (docx reader/writer split, `zip.nim` reuse, `openparser/xml` DOM `xpStrict`).
 
