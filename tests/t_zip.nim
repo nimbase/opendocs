@@ -10,6 +10,19 @@ func fromBytes(b: seq[byte]): string =
   result = newString(b.len)
   for i, x in b: result[i] = char(x)
 
+proc toolsUsable(progs: varargs[string]): bool =
+  ## Each tool present on PATH and actually spawnable: some runners
+  ## have entries findExe sees but CreateProcess cannot run.
+  for p in progs:
+    let exe = findExe(p)
+    if exe == "":
+      return false
+    try:
+      discard execCmdEx(quoteShell(exe) & " -v")
+    except OSError:
+      return false
+  true
+
 suite "raw deflate helpers":
   test "deflate/inflate round-trip":
     let src = toBytes("hello world, ".repeat(1000))
@@ -123,8 +136,8 @@ suite "writer/reader round-trip":
 
 suite "interop with system zip/unzip":
   test "our output passes `unzip -t`, and we read system zip output":
-    if findExe("unzip") == "" or findExe("zip") == "":
-      skip() # no system zip/unzip on this runner (e.g. Windows CI)
+    if not toolsUsable("unzip", "zip"):
+      skip() # no usable system zip/unzip on this runner (e.g. Windows CI)
     let dir = createTempDir("opendocs_", "_interop")
     defer: removeDir(dir)
     var w = newZipWriter()

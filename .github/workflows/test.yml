@@ -78,11 +78,26 @@ jobs:
           Windows)
             # MSYS2 UCRT64 bottles: coherent prefix, so the shipped
             # vips.pc / harfbuzz.pc files resolve out of the box.
+            # Install the UCRT64 GCC too: without it Nim falls back to
+            # the stray C:/mingw64 gcc on PATH, whose ld cannot use the
+            # ucrt64 import libraries. Full gettext supplies libintl's
+            # import library (only the -runtime DLL arrives transitively).
             C:/msys64/usr/bin/pacman -Sy --noconfirm
             C:/msys64/usr/bin/pacman -S --noconfirm --needed \
               mingw-w64-ucrt-x86_64-pkg-config \
+              mingw-w64-ucrt-x86_64-gcc \
+              mingw-w64-ucrt-x86_64-gettext \
               mingw-w64-ucrt-x86_64-harfbuzz \
               mingw-w64-ucrt-x86_64-libvips
             echo "C:/msys64/ucrt64/bin" >> "$GITHUB_PATH"
+            # Fail fast with absolute paths (PATH order is not ours to
+            # assume): the compiler must be ucrt64's, and the exact
+            # queries the Nim bindings issue at compile time must resolve.
+            # No harfbuzz-icu: opendocs no longer links it.
+            C:/msys64/ucrt64/bin/gcc --version
+            C:/msys64/ucrt64/bin/pkg-config --modversion \
+              harfbuzz harfbuzz-subset vips
+            C:/msys64/ucrt64/bin/pkg-config --cflags --libs \
+              vips harfbuzz harfbuzz-subset
             ;;
         esac
