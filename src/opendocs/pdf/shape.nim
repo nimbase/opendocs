@@ -7,7 +7,13 @@
 ## and Adobe Type 1 is not supported by HarfBuzz, both reported as
 ## clear errors rather than silent zeros.
 
-import harfbuzz
+import harfbuzz/hb_blob
+import harfbuzz/hb_buffer
+import harfbuzz/hb_common
+import harfbuzz/hb_face
+import harfbuzz/hb_font
+import harfbuzz/hb_ot_font
+import harfbuzz/hb_shape
 import ./types
 import ./lexer
 import ./cos

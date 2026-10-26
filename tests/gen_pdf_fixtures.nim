@@ -15,7 +15,11 @@ import std/unicode
 import nimcypher/algos/rc4
 import nimcypher/algos/sha256
 import checksums/md5
-import harfbuzz
+import harfbuzz/hb_blob
+import harfbuzz/hb_common
+import harfbuzz/hb_face
+import harfbuzz/hb_set
+import harfbuzz/hb_subset
 import libvips/api
 import libvips/bindings/vips
 import ./pdf_support

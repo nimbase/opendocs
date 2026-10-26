@@ -36,7 +36,13 @@ import std/algorithm
 import std/strutils
 import std/tables
 import std/unicode
-import harfbuzz
+import harfbuzz/hb_blob
+import harfbuzz/hb_common
+import harfbuzz/hb_face
+import harfbuzz/hb_font
+import harfbuzz/hb_map
+import harfbuzz/hb_set
+import harfbuzz/hb_subset
 import ./cos
 import ./write
 import ./shape

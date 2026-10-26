@@ -123,6 +123,8 @@ suite "writer/reader round-trip":
 
 suite "interop with system zip/unzip":
   test "our output passes `unzip -t`, and we read system zip output":
+    if findExe("unzip") == "" or findExe("zip") == "":
+      skip() # no system zip/unzip on this runner (e.g. Windows CI)
     let dir = createTempDir("opendocs_", "_interop")
     defer: removeDir(dir)
     var w = newZipWriter()
