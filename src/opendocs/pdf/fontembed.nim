@@ -592,7 +592,7 @@ proc oldToNewGids(fontBytes: string,
   for u in unicodes:
     hb_set_add(uset, hb_codepoint_t(u))
   discard hb_subset_input_pin_all_axes_to_default(input, sf.face)
-  hb_subset_input_set_flags(input, cuint(HB_SUBSET_FLAGS_DOWNGRADE_CFF2))
+  hb_subset_input_set_flags(input, HB_SUBSET_FLAGS_DOWNGRADE_CFF2)
   let plan = hb_subset_plan_create_or_fail(sf.face, input)
   if plan == nil:
     pdfFail("HarfBuzz refused the subset plan")
