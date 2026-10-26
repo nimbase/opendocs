@@ -1,5 +1,5 @@
 <p align="center">
-  Open parsers and writers for popular graphics file formats<br>
+  Open document readers and writers<br>
 </p>
 
 <p align="center">
@@ -323,8 +323,8 @@ d.close()
 - [ ] XLSX reader Phase D (read-only OLE for vbaProject.bin)
 - [ ] XLSX writer
 - [ ] PPTX read + write
-- [ ] DOCX high-level builder API (compose documents without touching the model)
-- [ ] DOCX accept/reject revisions API
+- [x] DOCX high-level builder API (compose documents without touching the model)
+- [x] DOCX accept/reject revisions API
 
 ### ❤ Contributions & Support
 - 🐛 Found a bug? [Create a new Issue](https://github.com/nimbase/opendocs/issues)
