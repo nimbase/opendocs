@@ -8,7 +8,7 @@
 ##
 ## The writer is a small document model on top of the low-level
 ## builder: one font setup, flowing paragraphs with automatic page
-## breaks, file-path images with an optional libvips compress pass.
+## breaks, file-path images with an optional JPEG compress pass.
 ## All text shaping and embedding goes through HarfBuzz (`CidFontUse`):
 ## supply a TrueType/OpenType program, get full Unicode out.
 ##
@@ -21,8 +21,6 @@
 import std/algorithm
 import std/os
 import std/tables
-import libvips/api
-import libvips/bindings/vips
 import pdf/cos
 import pdf/fontembed
 import pdf/lexer
@@ -51,8 +49,10 @@ export PdfDocument, openPdf, readPdfBytes, openPdfPassword,
 from pdf/text import TextRun, extractText
 export TextRun, extractText
 
-from pdf/vipsimg import PdfImage, ImageEncoding, pageImages, ensureVips
-export PdfImage, ImageEncoding, pageImages, ensureVips
+from pdf/imgpipe import PdfImage, ImageEncoding, pageImages,
+  decodeImageBytes, dynToPixels, flattenWhiteStr, downscaleToWidth,
+  encodeJpegStr, jpegSofComps
+export PdfImage, ImageEncoding, pageImages
 
 from pdf/doctext import TextLine, TextBlock, PageText, DocumentText, TextHit,
   maxExcerptLen, extractDocumentText, searchText, pageCount
@@ -118,7 +118,7 @@ proc pageDims*(s: PageSize, customW = 0.0,
 
 type
   ImageOpts* = object
-    compress*: bool = false ## re-encode via libvips (JPEG) when true
+    compress*: bool = false ## re-encode via JPEG when true
     jpegQuality*: range[0..100] = 85 ## quality for the compress pass
     maxWidthPx*: int = 0 ## downscale to this pixel width (0 keeps pixels)
     widthPt*: float64 = 0.0 ##placed width in points (0 fits the column)
@@ -396,43 +396,8 @@ proc textAt*(doc: var Pdf, text: string, x, y: float64,
   doc.curContent.add(emit & "\n")
 
 # ---------------------------------------------------------------------------
-# Writer: images (file path, optional libvips compress pass)
+# Writer: images (file path, optional JPEG compress pass)
 # ---------------------------------------------------------------------------
-
-proc vipsFail(path, what, msg: string) =
-  pdfFail("cannot " & what & " image '" & path & "' (" & msg & ")")
-
-proc vipsPixels(work: Image, path: string): tuple[pixels: string,
-    w, h, comps: int] =
-  var img = work
-  try:
-    if img.hasAlpha:
-      img = img.flatten(@[255.0, 255.0, 255.0])
-    if img.bands == 1:
-      img = img.castUchar()
-    elif img.bands == 3:
-      img = img.toSRGB().castUchar()
-    elif img.bands == 4:
-      img = img.toSRGB().castUchar()
-    else:
-      pdfFail("unsupported band count (" & $img.bands & ") in image '" &
-        path & "'")
-  except VipsError as e:
-    vipsFail(path, "convert", e.msg)
-  let w = img.width
-  let h = img.height
-  var n: csize_t = 0
-  let p = vips_image_write_to_memory(img.v, addr n)
-  if p == nil:
-    pdfFail("libvips write_to_memory failed on image '" & path & "'")
-  var px = newString(n)
-  if n > 0:
-    copyMem(addr px[0], p, n)
-  g_free(p)
-  let comps = if img.bands == 1: 1 else: 3
-  if px.len != w * h * comps:
-    pdfFail("sample size mismatch on image '" & path & "'")
-  (px, w, h, comps)
 
 proc imageFromFile*(doc: var Pdf, path: string,
     opts = ImageOpts()) =
@@ -440,10 +405,11 @@ proc imageFromFile*(doc: var Pdf, path: string,
   ##
   ## Without `compress` (default) JPEG files embed byte-for-byte as
   ## DCTDecode and anything else embeds lossless Flate RGB/gray. With
-  ## `compress` the pixels run through libvips (optional downscale to
-  ## `maxWidthPx`, alpha flattened over white) and re-encode to JPEG
-  ## at `jpegQuality`. `widthPt` sets the placed width (default fits
-  ## the text column); height follows the aspect ratio.
+  ## `compress` the pixels run through the pure-Nim JPEG encoder
+  ## (optional downscale to `maxWidthPx`, alpha flattened over white)
+  ## and re-encode to JPEG at `jpegQuality`. `widthPt` sets the placed
+  ## width (default fits the text column); height follows the aspect
+  ## ratio.
   if opts.maxWidthPx < 0:
     pdfFail("maxWidthPx must not be negative")
   if opts.widthPt < 0.0:
@@ -454,64 +420,47 @@ proc imageFromFile*(doc: var Pdf, path: string,
       pdfFail("cannot read image file '" & path & "' (" & e.msg & ")")
   if raw.len == 0:
     pdfFail("image file is empty: " & path)
-  var buf = newSeq[uint8](raw.len)
-  copyMem(addr buf[0], unsafeAddr raw[0], raw.len)
-  ensureVips()
-  var img: Image
-  try:
-    img = openBuffer(buf)
-  except VipsError as e:
-    vipsFail(path, "decode", e.msg)
-  if img.width <= 0 or img.height <= 0:
+  let dp = dynToPixels(decodeImageBytes(raw, path))
+  if dp.width <= 0 or dp.height <= 0:
     pdfFail("image has non-positive size: " & path)
   let isJpeg = raw.len >= 2 and raw[0] == '\xFF' and raw[1] == '\xD8'
   var objNum = 0
-  var doneW = img.width
-  var doneH = img.height
+  var doneW = dp.width
+  var doneH = dp.height
+  # CMYK/YCCK JPEGs (4 SOF components) decode to RGB pixels but the
+  # raw bytes are not RGB: never passthrough those.
   if not opts.compress and isJpeg and
-      (img.bands == 1 or img.bands == 3) and not img.hasAlpha:
-    objNum = doc.builder.addJpegImage(raw, doneW, doneH, img.bands)
+      (dp.comps == 1 or dp.comps == 3) and jpegSofComps(raw) != 4:
+    objNum = doc.builder.addJpegImage(raw, doneW, doneH, dp.comps)
   elif opts.compress:
-    var enc = img
-    if opts.maxWidthPx > 0 and enc.width > opts.maxWidthPx:
-      try:
-        enc = enc.resize(opts.maxWidthPx)
-      except VipsError as e:
-        vipsFail(path, "resize", e.msg)
-    try:
-      if enc.hasAlpha:
-        enc = enc.flatten(@[255.0, 255.0, 255.0])
-      if enc.bands == 4:
-        enc = enc.toSRGB()
-      elif enc.bands != 1 and enc.bands != 3:
-        pdfFail("unsupported band count (" & $enc.bands &
-          ") in image '" & path & "'")
-      enc = enc.castUchar()
-    except VipsError as e:
-      vipsFail(path, "convert", e.msg)
-    let comps = if enc.bands == 1: 1 else: 3
-    var encBytes: seq[uint8]
-    try:
-      encBytes = saveJPEG(enc, opts.jpegQuality)
-    except VipsError as e:
-      vipsFail(path, "encode", e.msg)
-    var js = newString(encBytes.len)
-    if encBytes.len > 0:
-      copyMem(addr js[0], unsafeAddr encBytes[0], encBytes.len)
-    doneW = enc.width
-    doneH = enc.height
+    var px = flattenWhiteStr(dp.pixels, dp.width, dp.height, dp.comps)
+    var comps = if dp.comps == 1: 1 else: 3
+    var w = dp.width
+    var h = dp.height
+    if opts.maxWidthPx > 0 and w > opts.maxWidthPx:
+      let scaled = downscaleToWidth(px, w, h, comps, opts.maxWidthPx)
+      px = scaled.px
+      w = scaled.w
+      h = scaled.h
+    let js = encodeJpegStr(px, w, h, comps, opts.jpegQuality, path)
+    doneW = w
+    doneH = h
     objNum = doc.builder.addJpegImage(js, doneW, doneH, comps)
   else:
-    var work = img
-    if opts.maxWidthPx > 0 and work.width > opts.maxWidthPx:
-      try:
-        work = work.resize(opts.maxWidthPx)
-      except VipsError as e:
-        vipsFail(path, "resize", e.msg)
-    let (px, pw, ph, comps) = vipsPixels(work, path)
-    doneW = pw
-    doneH = ph
-    objNum = doc.builder.addRgbImage(px, pw, ph, comps)
+    var px = dp.pixels
+    var w = dp.width
+    var h = dp.height
+    var comps = dp.comps
+    if opts.maxWidthPx > 0 and w > opts.maxWidthPx:
+      let scaled = downscaleToWidth(px, w, h, comps, opts.maxWidthPx)
+      px = scaled.px
+      w = scaled.w
+      h = scaled.h
+    px = flattenWhiteStr(px, w, h, comps)
+    comps = if comps == 1: 1 else: 3
+    doneW = w
+    doneH = h
+    objNum = doc.builder.addRgbImage(px, doneW, doneH, comps)
   let avail = doc.pageW - 2.0 * doc.margin
   var wPt = if opts.widthPt > 0.0: opts.widthPt else: avail
   if wPt > avail:

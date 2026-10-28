@@ -2,14 +2,45 @@
 ##
 ## Core round-trips use the vendored CJK micro font (self-contained);
 ## the DejaVu sentence case uses the vendored full DejaVuSans. Image
-## fixtures are generated with libvips at test time.
+## fixtures are generated with the pure-Nim `image` package at test time.
 import std/os
 import std/strutils
 import std/tables
 import unittest
-import libvips/api
+import image/buffer
+import image/color
+import image/dynamic
+import image/codecs/jpeg
+import image/codecs/png
 import ../src/opendocs/pdf
 import ../src/opendocs/pdf/fontembed
+
+proc writeJpeg(path: string, w, h: int, rgb: array[3, uint8],
+    quality = 85) =
+  var px = newSeq[Rgb[uint8]](w * h)
+  for i in 0 ..< w * h:
+    px[i] = Rgb[uint8](data: [rgb[0], rgb[1], rgb[2]])
+  let img = DynamicImage(kind: dkRgb8, rgb8: RgbImage(width: uint32(w),
+    height: uint32(h), pixels: px))
+  let enc = encodeJpeg(img, quality)
+  check enc.ok
+  var s = newString(enc.value.len)
+  if s.len > 0:
+    copyMem(addr s[0], unsafeAddr enc.value[0], s.len)
+  writeFile(path, s)
+
+proc writePng(path: string, w, h: int, rgb: array[3, uint8]) =
+  var px = newSeq[Rgb[uint8]](w * h)
+  for i in 0 ..< w * h:
+    px[i] = Rgb[uint8](data: [rgb[0], rgb[1], rgb[2]])
+  let img = DynamicImage(kind: dkRgb8, rgb8: RgbImage(width: uint32(w),
+    height: uint32(h), pixels: px))
+  let enc = encodePng(img)
+  check enc.ok
+  var s = newString(enc.value.len)
+  if s.len > 0:
+    copyMem(addr s[0], unsafeAddr enc.value[0], s.len)
+  writeFile(path, s)
 
 const
   Micro = "tests/data/fonts/cjk-cff-micro.otf"
@@ -187,8 +218,8 @@ test "missing font fails loudly":
 test "images embed and round-trip":
   let jpg = getTempDir() / "opengraphics_doc_jpg.jpg"
   let png = getTempDir() / "opengraphics_doc_png.png"
-  black(64, 48, 3).saveJPEG(jpg, 85)
-  black(64, 48, 3).savePNG(png)
+  writeJpeg(jpg, 64, 48, [0'u8, 0, 0], 85)
+  writePng(png, 64, 48, [0'u8, 0, 0])
   defer:
     removeFile(jpg)
     removeFile(png)

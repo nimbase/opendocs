@@ -20,8 +20,10 @@ import harfbuzz/hb_common
 import harfbuzz/hb_face
 import harfbuzz/hb_set
 import harfbuzz/hb_subset
-import libvips/api
-import libvips/bindings/vips
+import image/buffer
+import image/color
+import image/dynamic
+import image/codecs/jpeg
 import ./pdf_support
 import ../src/opendocs/pdf
 import ../src/opendocs/pdf/crypt
@@ -465,15 +467,17 @@ proc writeCjk() =
   writeFile(OutDir / "m8_cjk.pdf", assemblePdf(objs))
 
 proc jpegBytes(w, h: int, rgb: array[3, uint8]): string =
-  init_vips:
-    var px = newSeq[uint8](w * h * 3)
-    for i in 0 ..< w * h:
-      px[3 * i] = rgb[0]
-      px[3 * i + 1] = rgb[1]
-      px[3 * i + 2] = rgb[2]
-    let buf = fromMemory(px, w, h, 3, VIPS_FORMAT_UCHAR).saveJPEG(
-      quality = 95)
-    result = newString(buf.len)
+  var px = newSeq[Rgb[uint8]](w * h)
+  for i in 0 ..< w * h:
+    px[i] = Rgb[uint8](data: [rgb[0], rgb[1], rgb[2]])
+  let img = DynamicImage(kind: dkRgb8, rgb8: RgbImage(width: uint32(w),
+    height: uint32(h), pixels: px))
+  let enc = encodeJpeg(img, 95)
+  if not enc.ok:
+    raise newException(IOError, "fixture JPEG encode failed: " & enc.err.msg)
+  let buf = enc.value
+  result = newString(buf.len)
+  if buf.len > 0:
     copyMem(addr result[0], unsafeAddr buf[0], buf.len)
 
 proc writeImages() =

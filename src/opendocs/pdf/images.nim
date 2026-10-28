@@ -5,7 +5,7 @@
 ## applied. Color spaces resolve here (names, Indexed, ICCBased with
 ## the embedded profile bytes, Separation via /Alternate, CalGray and
 ## CalRGB approximated as device spaces). Masks stay unresolved
-## CosObj values for the vips back half. Coded streams (DCT, JPX,
+## CosObj values for the imgpipe back half. Coded streams (DCT, JPX,
 ## CCITT, JBIG2) pass through with their bytes intact; Lab images and
 ## Pattern color spaces raise clear errors.
 ##
@@ -226,7 +226,7 @@ proc parseRawImage*(d: var PdfDoc, name: string,
   var names: seq[string] = @[]
   if obj.kind == coStream:
     # Filter chain decoded here (DCT/JPX/CCITT/JBIG2 pass through
-    # for the vips back half); Flate/LZW/ASCII arrive as samples.
+    # for the imgpipe back half); Flate/LZW/ASCII arrive as samples.
     samples = decodeCosStream(obj)
     let f = obj.dictGet("Filter")
     if f.kind == coName:

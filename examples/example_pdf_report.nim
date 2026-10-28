@@ -2,8 +2,11 @@
 ## text, and compressed images. Run from the package root.
 import std/os
 import std/strutils
+import image/buffer
+import image/color
+import image/dynamic
+import image/codecs/jpeg
 import ../src/opendocs/pdf
-import libvips/api
 
 const DejaVuPath = "tests/data/fonts/DejaVuSans.ttf"
 const Micro = "tests/data/fonts/cjk-cff-micro.otf"
@@ -35,9 +38,21 @@ for i in 1 .. 40:
     "push the document past one page so page breaks kick in.")
 
 # Generated figures: raw pixels embed lossless, compress re-encodes
-# through libvips with an optional downscale.
+# through the pure-Nim JPEG encoder with an optional downscale.
 let fig = getTempDir() / "opengraphics_report_fig.jpg"
-black(320, 200, 3).saveJPEG(fig, 90)
+block:
+  var px = newSeq[Rgb[uint8]](320 * 200)
+  for i in 0 ..< px.len:
+    px[i] = Rgb[uint8](data: [0'u8, 0, 0])
+  let img = DynamicImage(kind: dkRgb8, rgb8: RgbImage(width: 320,
+    height: 200, pixels: px))
+  let enc = encodeJpeg(img, 90)
+  if not enc.ok:
+    raise newException(IOError, "figure encode failed: " & enc.err.msg)
+  var s = newString(enc.value.len)
+  if s.len > 0:
+    copyMem(addr s[0], unsafeAddr enc.value[0], s.len)
+  writeFile(fig, s)
 doc.newPage()
 doc.heading("Figures", 15.0)
 doc.imageFromFile(fig)

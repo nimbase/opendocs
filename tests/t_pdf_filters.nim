@@ -1,6 +1,6 @@
 import std/strutils
 import unittest
-import zlib/zlib_api
+import archive/flate
 import ../src/opendocs/pdf
 import ../src/opendocs/pdf/cos
 import ../src/opendocs/pdf/docmodel
@@ -9,18 +9,7 @@ import ./pdf_support
 
 proc rawDeflate(data: string): string =
   ## Raw RFC 1951 deflate (no zlib wrapper) for fallback-path tests.
-  var zs = ZStream(next_in: cast[ptr uint8](unsafeAddr data[0]),
-    avail_in: data.len.cuint)
-  check zs.deflateInit2(Z_DEFAULT_COMPRESSION, Z_DEFLATED, Z_RAW_DEFLATE,
-    Z_DEFAULT_MEM_LEVEL, Z_DEFAULT_STRATEGY) == Z_OK
-  let bound = int(zs.deflateBound(data.len.culong)) + 8
-  result = newString(bound)
-  zs.next_out = cast[ptr uint8](addr result[0])
-  zs.avail_out = cuint(bound)
-  check zs.deflate(Z_FINISH) == Z_STREAM_END
-  let total = bound - int(zs.avail_out)
-  discard zs.deflateEnd()
-  result.setLen(total)
+  deflateFixed(data)
 
 proc lzwEncode(data: string, earlyChange = 1): string =
   ## Minimal PDF-flavor LZW encoder matching lzwDecode rules.

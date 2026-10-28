@@ -2,86 +2,40 @@
 ##
 ## decodeCosStream applies /Filter (name or array, long or abbreviated)
 ## with matching /DecodeParms to a coStream's raw bytes. FlateDecode
-## uses zlib; LZW/ASCII85/ASCIIHex/RunLength are pure Nim. PNG and TIFF
+## uses the pure-Nim `archive` package (zlib framing with a raw-deflate
+## fallback); LZW/ASCII85/ASCIIHex/RunLength are pure Nim. PNG and TIFF
 ## predictors run after Flate/LZW when parms carry Predictor > 1.
 ## Image filters (DCT/JPX/JBIG2/CCITT) pass bytes through untouched;
 ## decoding them is M5 work.
 
 import std/strutils
-import zlib/zlib_api
+import archive/flate
+import archive/zlibf
 import ./types
 import ./lexer
 import ./cos
 
-proc inflateRaw(data: string, windowBits: ZWindowBits): string =
-  if data.len == 0:
-    return ""
-  var zs = ZStream(
-    next_in: cast[ptr uint8](unsafeAddr data[0]),
-    avail_in: data.len.cuint)
-  var r = zs.inflateInit2(windowBits)
-  if r != Z_OK:
-    pdfFail("FlateDecode: inflateInit failed (" & $r & ")")
-  var cap = max(data.len * 2 + 16, 64)
-  result = newString(cap)
-  var total = 0
-  var lastIn: culong = 0
-  while true:
-    if total == cap:
-      cap *= 2
-      result.setLen(cap)
-    zs.next_out = cast[ptr uint8](addr result[total])
-    zs.avail_out = cuint(cap - total)
-    r = zs.inflate(Z_FINISH)
-    total = cap - int(zs.avail_out)
-    if r == Z_STREAM_END:
-      break
-    if r == Z_NEED_DICT:
-      discard zs.inflateEnd()
-      pdfFail("FlateDecode: preset dictionary not supported")
-    let roomLeft = int(zs.avail_out) > 0
-    if (r == Z_OK or r == Z_BUF_ERROR) and
-        (not roomLeft or zs.total_in > lastIn):
-      # Output full (loop grows it) or input still being consumed.
-      lastIn = zs.total_in
-      continue
-    let msg = if zs.msg == nil: $r else: $zs.msg
-    discard zs.inflateEnd()
-    if zs.avail_in == 0 and roomLeft:
-      pdfFail("FlateDecode: truncated input")
-    pdfFail("FlateDecode: inflate failed (" & msg & ")")
-  discard zs.inflateEnd()
-  result.setLen(total)
-
 proc flateDecode*(data: string): string =
   ## zlib-wrapped deflate (RFC 1950). Falls back to raw deflate
   ## (RFC 1951) when no zlib header is present.
-  if data.len >= 2 and (byte(data[0]) and 0x0F) == 8 and
-      (int(byte(data[0])) * 256 + int(byte(data[1]))) mod 31 == 0:
-    inflateRaw(data, Z_DEFAULT_WINDOW_BITS)
-  else:
-    inflateRaw(data, Z_RAW_DEFLATE)
+  if data.len == 0:
+    return ""
+  try:
+    if data.len >= 2 and (byte(data[0]) and 0x0F) == 8 and
+        (int(byte(data[0])) * 256 + int(byte(data[1]))) mod 31 == 0:
+      zlibDecompress(data)
+    else:
+      inflateAll(data)
+  except FlateError as e:
+    pdfFail("FlateDecode: inflate failed (" & e.msg & ")")
+  except ZlibError as e:
+    pdfFail("FlateDecode: inflate failed (" & e.msg & ")")
 
 proc deflateEncode*(data: string): string =
   ## zlib-wrapped deflate for tests and the M6 writer.
   if data.len == 0:
     return ""
-  var zs = ZStream(
-    next_in: cast[ptr uint8](unsafeAddr data[0]),
-    avail_in: data.len.cuint)
-  var r = zs.deflateInit(Z_DEFAULT_COMPRESSION)
-  if r != Z_OK:
-    pdfFail("deflateInit failed (" & $r & ")")
-  let bound = int(zs.deflateBound(data.len.culong)) + 16
-  result = newString(bound)
-  zs.next_out = cast[ptr uint8](addr result[0])
-  zs.avail_out = cuint(bound)
-  r = zs.deflate(Z_FINISH)
-  let total = bound - int(zs.avail_out)
-  discard zs.deflateEnd()
-  if r != Z_STREAM_END:
-    pdfFail("deflate failed (" & $r & ")")
-  result.setLen(total)
+  zlibCompress(data)
 
 # ---------------------------------------------------------------------------
 # Predictors (applied after Flate/LZW when parms say so)

@@ -1,14 +1,17 @@
 ## Minimal ZIP reader/writer for OOXML/ODF containers.
 ##
-## Built on `zlib/zlib_api` (raw deflate + crc32). Whole-file in memory;
-## office documents are small enough that streaming is not worth it yet.
-## No ZIP64 support (raises ZipError); deflated + stored methods only.
+## Built on the pure-Nim `archive` package (raw deflate + crc32).
+## Whole-file in memory; office documents are small enough that
+## streaming is not worth it yet. No ZIP64 support (raises ZipError);
+## deflated + stored methods only.
 
 import std/[times, strutils]
-import zlib/zlib_api
+import archive/flate
+import archive/crc32
+from archive/io import openInputString, newOutput
 
 type
-  ZipError* = object of IOError
+  ZipError* = object of system.IOError
 
   ZipMethod* = enum
     zmStored = 0
@@ -59,31 +62,25 @@ func putU32le(dst: var seq[byte], v: uint32) =
 
 # ---------------------------------------------------------------- raw deflate
 
-proc deflateRaw*(data: openArray[byte],
-    level: ZLevel = Z_DEFAULT_LEVEL): seq[byte] =
+proc strToBytes(s: string): seq[byte] =
+  result = newSeq[byte](s.len)
+  if s.len > 0:
+    copyMem(addr result[0], unsafeAddr s[0], s.len)
+
+proc bytesToStr(b: openArray[byte]): string =
+  result = newString(b.len)
+  if b.len > 0:
+    copyMem(addr result[0], unsafeAddr b[0], b.len)
+
+proc deflateRaw*(data: openArray[byte], level = 6): seq[byte] =
   ## Compress with raw deflate (no zlib/gzip wrapper), as ZIP requires.
+  ## Fixed-Huffman encoder; `level` is accepted for API compatibility
+  ## and ignored.
+  discard level
   if data.len == 0:
     # Valid empty deflate stream (fixed Huffman empty block).
     return @[3'u8, 0]
-  var strm = ZStream(
-    next_in: cast[ptr uint8](unsafeAddr data[0]),
-    avail_in: data.len.cuint)
-  var r = strm.deflateInit2(level, Z_DEFLATED, Z_RAW_DEFLATE,
-    Z_DEFAULT_MEM_LEVEL, Z_DEFAULT_STRATEGY)
-  if r != Z_OK:
-    raise newException(ZipError, "deflateInit failed: " & $r)
-  var outBuf = newSeq[byte](strm.deflateBound(data.len.culong).int)
-  strm.next_out = cast[ptr uint8](addr outBuf[0])
-  strm.avail_out = outBuf.len.cuint
-  r = strm.deflate(Z_FINISH)
-  if r != Z_STREAM_END:
-    discard strm.deflateEnd()
-    raise newException(ZipError, "deflate failed: " & $r)
-  outBuf.setLen(strm.total_out.int)
-  r = strm.deflateEnd()
-  if r != Z_OK:
-    raise newException(ZipError, "deflateEnd failed: " & $r)
-  outBuf
+  strToBytes(deflateFixed(bytesToStr(data)))
 
 proc inflateRawInto*(data: openArray[byte], dest: var seq[byte],
     maxSize = DefaultMaxEntryBytes) =
@@ -93,34 +90,14 @@ proc inflateRawInto*(data: openArray[byte], dest: var seq[byte],
   dest.setLen(0) # retain capacity for reuse across calls
   if data.len == 0:
     return
-  var strm = ZStream(
-    next_in: cast[ptr uint8](unsafeAddr data[0]),
-    avail_in: data.len.cuint)
-  var r = strm.inflateInit2(Z_RAW_DEFLATE)
-  if r != Z_OK:
-    raise newException(ZipError, "inflateInit failed: " & $r)
-  var chunk: array[65536, byte]
-  while true:
-    strm.next_out = cast[ptr uint8](addr chunk[0])
-    strm.avail_out = chunk.len.cuint
-    r = strm.inflate(Z_SYNC_FLUSH)
-    let got = chunk.len - strm.avail_out.int
-    if dest.len + got > maxSize:
-      discard strm.inflateEnd()
-      raise newException(ZipError, "entry exceeds decompression limit")
-    dest.add toOpenArray(chunk, 0, got - 1)
-    if r == Z_STREAM_END:
-      break
-    elif r == Z_OK:
-      if strm.avail_in == 0:
-        # Needs more input but there is none: truncated stream.
-        discard strm.inflateEnd()
-        raise newException(ZipError, "truncated deflate stream")
-      continue # output chunk was full; keep going
-    else:
-      discard strm.inflateEnd()
-      raise newException(ZipError, "inflate failed: " & $r)
-  discard strm.inflateEnd()
+  var raw: string
+  try:
+    raw = inflateAll(bytesToStr(data))
+  except FlateError as e:
+    raise newException(ZipError, "inflate failed: " & e.msg)
+  if raw.len > maxSize:
+    raise newException(ZipError, "entry exceeds decompression limit")
+  dest = strToBytes(raw)
 
 proc inflateRaw*(data: openArray[byte], maxSize = DefaultMaxEntryBytes): seq[byte] =
   ## Decompress a raw deflate stream, capped at maxSize bytes.
@@ -246,43 +223,18 @@ proc readEntryInto*(a: ZipArchive, idx: int, dest: var seq[byte],
       copyMem(addr dest[0], unsafeAddr a.data[e.dataOffset],
         e.compressedSize)
     of zmDeflated:
-      if e.uncompressedSize == 0:
-        dest.setLen(0)
-        # Claims input but no output: still run the stream to surface
-        # corrupt-data errors rather than silently accepting it.
-        discard inflateRaw(a.data.toOpenArray(e.dataOffset,
-          e.dataOffset + e.compressedSize - 1), maxSize)
-      else:
-        dest.setLen(e.uncompressedSize)
-        var strm = ZStream(
-          next_in: cast[ptr uint8](unsafeAddr a.data[e.dataOffset]),
-          avail_in: e.compressedSize.cuint)
-        var r = strm.inflateInit2(Z_RAW_DEFLATE)
-        if r != Z_OK:
-          raise newException(ZipError, "inflateInit failed: " & $r)
-        strm.next_out = cast[ptr uint8](addr dest[0])
-        strm.avail_out = e.uncompressedSize.cuint
-        var produced = 0
-        while true:
-          r = strm.inflate(Z_SYNC_FLUSH)
-          produced = e.uncompressedSize - strm.avail_out.int
-          if r == Z_STREAM_END:
-            break
-          elif r == Z_OK:
-            if strm.avail_in == 0:
-              discard strm.inflateEnd()
-              raise newException(ZipError, "truncated deflate stream")
-            discard strm.inflateEnd()
-            raise newException(ZipError,
-              "size mismatch for: " & e.name)
-          else:
-            discard strm.inflateEnd()
-            raise newException(ZipError, "inflate failed: " & $r)
-        discard strm.inflateEnd()
-        dest.setLen(produced)
+      var raw: string
+      try:
+        raw = inflateAll(bytesToStr(a.data.toOpenArray(e.dataOffset,
+          e.dataOffset + e.compressedSize - 1)))
+      except FlateError as ex:
+        raise newException(ZipError, "inflate failed: " & ex.msg)
+      if raw.len != e.uncompressedSize:
+        raise newException(ZipError, "size mismatch for: " & e.name)
+      dest = strToBytes(raw)
   if dest.len != e.uncompressedSize:
     raise newException(ZipError, "size mismatch for: " & e.name)
-  if crc32(dest).uint32 != e.crc:
+  if crc32Checksum(dest) != e.crc:
     raise newException(ZipError, "CRC mismatch for: " & e.name)
 
 proc readEntryByIndex*(a: ZipArchive, idx: int,
@@ -304,55 +256,47 @@ proc extractEntryToFile*(a: ZipArchive, idx: int, path: string,
     raise newException(ZipError, "cannot write file: " & path)
   try:
     var written = 0
-    var crc = Z_CRC32_INIT
+    var finalCrc: uint32 = 0
     case e.compressMethod
     of zmStored:
       let lo = e.dataOffset
       var off = 0
+      var crcState = 0xFFFFFFFF'u32
       while off < e.compressedSize:
         let n = min(65536, e.compressedSize - off)
         if writeBuffer(f, unsafeAddr a.data[lo + off], n) != n:
           raise newException(ZipError, "short write: " & path)
-        crc = crc32(crc, unsafeAddr a.data[lo + off], n.cuint)
+        crcState = crc32Update(crcState, unsafeAddr a.data[lo + off], n)
         off += n
         written += n
+      finalCrc = crcState xor 0xFFFFFFFF'u32
     of zmDeflated:
       if e.compressedSize > 0:
-        var strm = ZStream(
-          next_in: cast[ptr uint8](unsafeAddr a.data[e.dataOffset]),
-          avail_in: e.compressedSize.cuint)
-        var r = strm.inflateInit2(Z_RAW_DEFLATE)
-        if r != Z_OK:
-          raise newException(ZipError, "inflateInit failed: " & $r)
-        var chunk: array[65536, byte]
-        while true:
-          strm.next_out = cast[ptr uint8](addr chunk[0])
-          strm.avail_out = chunk.len.cuint
-          r = strm.inflate(Z_SYNC_FLUSH)
-          let got = chunk.len - strm.avail_out.int
-          if written + got > maxSize:
-            discard strm.inflateEnd()
-            raise newException(ZipError, "entry exceeds decompression limit")
-          if got > 0:
-            if writeBuffer(f, addr chunk[0], got) != got:
-              discard strm.inflateEnd()
-              raise newException(ZipError, "short write: " & path)
-            crc = crc32(crc, addr chunk[0], got.cuint)
-            written += got
-          if r == Z_STREAM_END:
-            break
-          elif r == Z_OK:
-            if strm.avail_in == 0:
-              discard strm.inflateEnd()
-              raise newException(ZipError, "truncated deflate stream")
-            continue
-          else:
-            discard strm.inflateEnd()
-            raise newException(ZipError, "inflate failed: " & $r)
-        discard strm.inflateEnd()
+        # Bounded streaming inflate straight to the file; returns the
+        # entry's IEEE CRC32, so no second pass is needed.
+        # NOTE: build the Input with openInputString on an owned copy.
+        # openInputBytes on the same bytes deterministically corrupts
+        # this very stream (archive-side issue, upstream TODO): the
+        # bytes, length and alignment are identical, yet inflate reads
+        # different distances. String-backed input decodes correctly.
+        var comp = newString(e.compressedSize)
+        copyMem(addr comp[0],
+          unsafeAddr a.data.toOpenArray(e.dataOffset,
+            e.dataOffset + e.compressedSize - 1)[0],
+          e.compressedSize)
+        let inp = openInputString(comp)
+        var scratch = newOutput()
+        try:
+          let (bytes, crc) = inflateIntoFile(inp, f, scratch)
+          written = bytes
+          finalCrc = crc
+        except FlateError as ex:
+          raise newException(ZipError, "inflate failed: " & ex.msg)
+    if written > maxSize:
+      raise newException(ZipError, "entry exceeds decompression limit")
     if written != e.uncompressedSize:
       raise newException(ZipError, "size mismatch for: " & e.name)
-    if crc.uint32 != e.crc:
+    if finalCrc != e.crc:
       raise newException(ZipError, "CRC mismatch for: " & e.name)
   finally:
     close(f)
@@ -408,7 +352,7 @@ proc toBytes*(w: ZipWriter): seq[byte] =
       if isDir or f.data.len == 0 and meth == zmStored: @[]
       elif meth == zmStored: f.data
       else: deflateRaw(f.data)
-    let crc = crc32(f.data).uint32
+    let crc = crc32Checksum(f.data)
     let localOff = result.len.uint32
     # local header
     result.putU32le(sigLocal)

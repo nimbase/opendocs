@@ -7,6 +7,14 @@
 ## and Adobe Type 1 is not supported by HarfBuzz, both reported as
 ## clear errors rather than silent zeros.
 
+# The harfbuzz-nim submodules below carry no CFLAGS of their own
+# (only the umbrella module does, and importing that would also link
+# harfbuzz-icu, which the Windows runner lacks). Emit the compile
+# flags here instead; passC applies build-wide. Mirrors the binding's
+# own defines so -d:harfbuzzStatic keeps working.
+when not defined(harfbuzzStatic) and not defined(harfbuzzNoPkgConfig):
+  {.passC: gorge("pkg-config --cflags harfbuzz").}
+
 import harfbuzz/hb_blob
 import harfbuzz/hb_buffer
 import harfbuzz/hb_common

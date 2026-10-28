@@ -1,4 +1,4 @@
-## M5 tests: image XObjects through the libvips pipeline.
+## M5 tests: image XObjects through the pure-Nim image pipeline.
 ##
 ## Fixture tests/data/pdf/m5_images.pdf (see tests/gen_pdf_fixtures.nim):
 ## Im1 2x2 RGB Flate; Im2 2x2 gray Flate with SMask; Im3 2x2 Indexed;

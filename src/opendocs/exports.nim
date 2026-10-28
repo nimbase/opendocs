@@ -1,22 +1,29 @@
-## Shared image export through libvips for document formats.
+## Shared image export through the pure-Nim `image` package.
 ##
 ## One format enum plus options shared by every module: PDF images
 ## (`PdfImage`), and later DOCX extracted images and other doc formats,
-## convert to ExportPixels and encode or save. JPEG, PNG and WebP encode
-## to memory; every format saves to a path, dispatched by file extension.
-## Alpha flattens over white for JPEG (the only listed format without
-## alpha); vips errors surface as ExportError.
+## convert to ExportPixels and encode or save. JPEG, PNG, WebP and TIFF
+## encode to memory; BMP saves through its encoder; the rest dispatch
+## by file extension. Alpha flattens over white for JPEG (the only
+## listed format without alpha).
 
 import std/strutils
-import libvips/api
-import libvips/bindings/vips
-import ./pdf/vipsimg
+import image/buffer
+import image/color
+import image/dynamic
+import image/codecs/jpeg
+import image/codecs/png
+import image/codecs/webp
+import image/codecs/tiff
+import image/codecs/bmp
+import ./pdf/imgpipe
 
 type
   ExportError* = object of CatchableError
 
   ImageFormat* = enum
-    fmtJpeg, fmtPng, fmtWebP, fmtTiff, fmtGif, fmtHeif, fmtAvif, fmtJxl
+    fmtJpeg, fmtPng, fmtWebP, fmtTiff, fmtGif, fmtHeif, fmtAvif, fmtJxl,
+    fmtBmp
 
   ExportOptions* = object
     jpegQuality*: range[0..100] = 90
@@ -26,7 +33,7 @@ type
   ExportPixels* = object
     width*: int
     height*: int
-    bands*: int ## 1 gray, 3 rgb, 4 rgb+alpha (8-bit)
+    bands*: int ## 1 gray, 2 gray+alpha, 3 rgb, 4 rgb+alpha (8-bit)
     data*: string
 
 proc exportFail(msg: string) {.noreturn.} =
@@ -43,8 +50,9 @@ proc formatForExt*(ext: string): ImageFormat =
   of "heif", "heic": fmtHeif
   of "avif": fmtAvif
   of "jxl": fmtJxl
+  of "bmp": fmtBmp
   else: exportFail("unsupported image extension '." & ext &
-      "' (want jpg, png, webp, tif, gif, heif, avif or jxl)")
+      "' (want jpg, png, webp, tif, gif, heif, avif, jxl or bmp)")
 
 proc formatForPath*(path: string): ImageFormat =
   let dot = path.rfind('.')
@@ -66,46 +74,81 @@ proc flattenWhite(px: ExportPixels): ExportPixels =
   ## Drop alpha over a white background (for JPEG output).
   if px.bands != 2 and px.bands != 4:
     return px
-  let comps = px.bands - 1
-  result = ExportPixels(width: px.width, height: px.height,
-    bands: comps, data: newString(px.width * px.height * comps))
-  for i in 0 ..< px.width * px.height:
-    let a = int(byte(px.data[i * px.bands + comps]))
-    for c in 0 ..< comps:
-      let v = int(byte(px.data[i * px.bands + c]))
-      result.data[i * comps + c] = char(v * a div 255 +
-        255 * (255 - a) div 255)
+  ExportPixels(width: px.width, height: px.height,
+    bands: px.bands - 1,
+    data: flattenWhiteStr(px.data, px.width, px.height, px.bands))
 
-proc toBytes(s: string): seq[uint8] =
-  result = newSeq[uint8](s.len)
-  if s.len > 0:
-    copyMem(addr result[0], unsafeAddr s[0], s.len)
-
-proc toVips(px: ExportPixels): Image =
+proc toDynamic(px: ExportPixels): DynamicImage =
   if px.width <= 0 or px.height <= 0 or
       px.data.len != px.width * px.height * px.bands:
     exportFail("export pixel size mismatch")
-  var data = toBytes(px.data)
-  fromMemory(data, px.width, px.height, px.bands, VIPS_FORMAT_UCHAR)
+  let W = uint32(px.width)
+  let H = uint32(px.height)
+  case px.bands
+  of 1:
+    var g = GrayImage(width: W, height: H,
+      pixels: newSeq[Luma[uint8]](px.width * px.height))
+    for i in 0 ..< px.width * px.height:
+      g.pixels[i] = Luma[uint8](data: [byte(px.data[i])])
+    DynamicImage(kind: dkLuma8, luma8: g)
+  of 2:
+    var g = GrayAlphaImage(width: W, height: H,
+      pixels: newSeq[LumaA[uint8]](px.width * px.height))
+    for i in 0 ..< px.width * px.height:
+      g.pixels[i] = LumaA[uint8](data: [byte(px.data[2 * i]),
+        byte(px.data[2 * i + 1])])
+    DynamicImage(kind: dkLumaA8, lumaA8: g)
+  of 3:
+    var rgb = RgbImage(width: W, height: H,
+      pixels: newSeq[Rgb[uint8]](px.width * px.height))
+    for i in 0 ..< px.width * px.height:
+      rgb.pixels[i] = Rgb[uint8](data: [byte(px.data[3 * i]),
+        byte(px.data[3 * i + 1]), byte(px.data[3 * i + 2])])
+    DynamicImage(kind: dkRgb8, rgb8: rgb)
+  of 4:
+    var rgba = RgbaImage(width: W, height: H,
+      pixels: newSeq[Rgba[uint8]](px.width * px.height))
+    for i in 0 ..< px.width * px.height:
+      rgba.pixels[i] = Rgba[uint8](data: [byte(px.data[4 * i]),
+        byte(px.data[4 * i + 1]), byte(px.data[4 * i + 2]),
+        byte(px.data[4 * i + 3])])
+    DynamicImage(kind: dkRgba8, rgba8: rgba)
+  else:
+    exportFail("export needs 1-4 bands, got " & $px.bands)
+
+proc toBytes(b: seq[uint8]): string =
+  result = newString(b.len)
+  if b.len > 0:
+    copyMem(addr result[0], unsafeAddr b[0], b.len)
 
 proc encodeImage*(px: ExportPixels, format: ImageFormat,
     opts = ExportOptions()): string =
-  ## Encode to JPEG, PNG or WebP bytes. Other formats need a path
-  ## (use saveImage); conversions without a memory encoder fail loudly.
-  ensureVips()
-  try:
-    let bytes =
-      case format
-      of fmtJpeg: flattenWhite(px).toVips().saveJPEG(opts.jpegQuality)
-      of fmtPng: px.toVips().savePNG(opts.pngCompression)
-      of fmtWebP: px.toVips().saveWebP(opts.webpQuality)
-      else: exportFail("format " & $format &
-          " has no memory encoder (use saveImage with a path)")
-    result = newString(bytes.len)
-    if bytes.len > 0:
-      copyMem(addr result[0], unsafeAddr bytes[0], bytes.len)
-  except VipsError as e:
-    exportFail("libvips encode failed (" & e.msg & ")")
+  ## Encode to JPEG, PNG, WebP or TIFF bytes. Other formats need a
+  ## path (use saveImage); conversions without a memory encoder fail
+  ## loudly. `pngCompression`/`webpQuality` are kept for API
+  ## compatibility: the pure-Nim encoders are fixed-strategy.
+  let q = max(1, opts.jpegQuality)
+  let bytes =
+    case format
+    of fmtJpeg:
+      let r = encodeJpeg(px.flattenWhite().toDynamic(), q)
+      if not r.ok: exportFail("JPEG encode failed (" & r.err.msg & ")")
+      r.value
+    of fmtPng:
+      let r = encodePng(px.toDynamic())
+      if not r.ok: exportFail("PNG encode failed (" & r.err.msg & ")")
+      r.value
+    of fmtWebP:
+      let r = encodeWebp(px.toDynamic())
+      if not r.ok: exportFail("WebP encode failed (" & r.err.msg & ")")
+      r.value
+    of fmtTiff:
+      let r = encodeTiff(px.toDynamic())
+      if not r.ok: exportFail("TIFF encode failed (" & r.err.msg & ")")
+      r.value
+    else: exportFail("format " & $format &
+        " has no memory encoder (use saveImage with a path)")
+  toBytes(bytes)
 
 proc encodeImage*(img: PdfImage, format: ImageFormat,
     opts = ExportOptions()): string =
@@ -114,29 +157,32 @@ proc encodeImage*(img: PdfImage, format: ImageFormat,
 proc saveImage*(px: ExportPixels, path: string,
     opts = ExportOptions()) =
   ## Save to path, dispatching on the file extension. JPEG honors
-  ## jpegQuality, PNG honors pngCompression, WebP honors webpQuality;
-  ## the rest use the binding defaults.
-  ensureVips()
-  try:
+  ## jpegQuality; the other pure-Nim encoders are fixed-strategy.
+  ## GIF, HEIF, AVIF and JXL have no pure-Nim file writer.
+  let data =
     case formatForPath(path)
-    of fmtJpeg:
-      flattenWhite(px).toVips().saveJPEG(path, opts.jpegQuality)
-    of fmtPng:
-      px.toVips().savePNG(path, opts.pngCompression)
-    of fmtWebP:
-      px.toVips().saveWebP(path, opts.webpQuality)
-    of fmtTiff:
-      px.toVips().saveTIFF(path)
+    of fmtJpeg, fmtPng, fmtWebP, fmtTiff:
+      px.encodeImage(formatForPath(path), opts)
+    of fmtBmp:
+      let dyn = px.toDynamic()
+      let raw =
+        case dyn.kind
+        of dkRgb8: encodeBmpRgb8(dyn.rgb8)
+        of dkRgba8: encodeBmpRgba8(dyn.rgba8)
+        else: exportFail("BMP export needs RGB(A) pixels")
+      toBytes(raw)
     of fmtGif:
-      px.toVips().saveGIF(path)
+      exportFail("GIF save is not supported by the pure-Nim backend")
     of fmtHeif:
-      px.toVips().saveHEIF(path)
+      exportFail("HEIF save is not supported by the pure-Nim backend")
     of fmtAvif:
-      px.toVips().saveAVIF(path)
+      exportFail("AVIF save is not supported by the pure-Nim backend")
     of fmtJxl:
-      px.toVips().saveJXL(path)
-  except VipsError as e:
-    exportFail("libvips save to '" & path & "' failed (" & e.msg & ")")
+      exportFail("JPEG-XL save is not supported by the pure-Nim backend")
+  try:
+    writeFile(path, data)
+  except IOError as e:
+    exportFail("cannot write image to '" & path & "' (" & e.msg & ")")
 
 proc saveImage*(img: PdfImage, path: string,
     opts = ExportOptions()) =
