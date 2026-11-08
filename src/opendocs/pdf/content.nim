@@ -73,6 +73,11 @@ proc parseInlineImage(lx: var Lexer, limits: PdfLimits): ContentOp =
   let dataStart = lx.pos
   var dataEnd = -1
   var i = dataStart
+  # First-match scan, O(n): each position does O(1) work and the first
+  # `EI` + delimiter wins, so no candidate/look-ahead cap is needed for
+  # performance (the reference caps its nested verification look-ahead;
+  # this loop has none). A payload containing that exact byte run still
+  # truncates early; producers must avoid it.
   while i < lx.s.len:
     if isWs(lx.s[i]) and i + 3 <= lx.s.len and
         lx.s[i + 1] == 'E' and lx.s[i + 2] == 'I' and

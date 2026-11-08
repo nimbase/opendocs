@@ -54,7 +54,7 @@ proc resolveCompressed(d: var PdfDoc, num, stmNum, idx: int): CosObj =
   if idx < 0 or idx >= nObj.ival:
     pdfFail("object stream index " & $idx & " out of range in stream " &
       $stmNum)
-  let decoded = decodeCosStream(stm)
+  let decoded = decodeCosStream(stm, d.limits)
   var lx = initLexer(fromString(decoded))
   var target = -1
   for i in 0 ..< nObj.ival:
@@ -112,6 +112,15 @@ proc close*(d: var PdfDoc) =
   ## Release the underlying file mapping, if any. Using the document
   ## afterwards raises Defect.
   d.data.close()
+
+proc recovered*(d: PdfDoc): bool =
+  ## True when the xref table was rebuilt by lenient/brute-force
+  ## recovery (see xref notes for what was skipped).
+  d.xref.recovered
+
+proc recoveryNotes*(d: PdfDoc): seq[string] =
+  ## What recovery skipped or rebuilt (empty for strict parses).
+  d.xref.notes
 
 proc cacheSize*(d: PdfDoc): int {.inline.} = d.cache.len
 
@@ -234,11 +243,15 @@ proc readBox(o: CosObj): tuple[w, h: float64] =
 
 proc walkPages(d: var PdfDoc, nodeRef: CosObj,
     inherited: tuple[has: bool, w, h: float64], depth: int,
-    pages: var seq[PageBox]) =
+    pages: var seq[PageBox], seen: var Table[int, bool]) =
   if depth > d.limits.maxWalkDepth:
     pdfFail("page tree exceeds nesting depth " & $d.limits.maxWalkDepth)
   if pages.len >= d.limits.maxPages:
     pdfFail("page count exceeds limit " & $d.limits.maxPages)
+  if nodeRef.kind == coRef:
+    if seen.hasKey(nodeRef.refNum):
+      pdfFail("page tree cycle at object " & $nodeRef.refNum)
+    seen[nodeRef.refNum] = true
   let node = d.resolve(nodeRef)
   if node.kind != coDict:
     pdfFail("page tree node is not a dictionary")
@@ -251,7 +264,7 @@ proc walkPages(d: var PdfDoc, nodeRef: CosObj,
     for k in kids.items:
       if k.kind != coRef:
         pdfFail("page tree kid is not an indirect reference")
-      d.walkPages(k, box, depth + 1, pages)
+      d.walkPages(k, box, depth + 1, pages, seen)
   else:
     let t = node.dictGet("Type")
     if t.kind == coName and t.name == "Pages":
@@ -267,4 +280,5 @@ proc pageBoxes*(d: var PdfDoc): seq[PageBox] =
   if pagesRef.kind != coRef:
     pdfFail("PDF catalog missing /Pages reference")
   result = @[]
-  d.walkPages(pagesRef, (false, 0.0, 0.0), 0, result)
+  var seen = initTable[int, bool]()
+  d.walkPages(pagesRef, (false, 0.0, 0.0), 0, result, seen)

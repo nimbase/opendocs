@@ -8,6 +8,7 @@
 ## and better fallback links may exist downstream, so anything
 ## unparseable yields an empty map instead of failing.
 
+import std/algorithm
 import std/tables
 
 type SfntCursor = object
@@ -117,8 +118,20 @@ proc parseSfntCmap*(fontBytes: string): Table[int, int] =
     let off = c.u32(p + 4)
     if not c.ok:
       return
-    if (plat == 0) or (plat == 3 and kind in [0, 1, 10]):
+    if (plat == 0) or (plat == 3 and kind in [0, 1, 10]) or
+        (plat == 1 and kind == 0):
       unicodeSubs.add((plat, kind, off))
+  # Symbolic fonts resolve through Windows subtables first, then Unicode,
+  # then Macintosh (§9.6.5.4 parity: (3,0)/(3,1) before (1,0)); the file
+  # order is kept inside each class so first mapping still wins.
+  proc subPriority(s: Sub): int =
+    if s.plat == 3 and s.kind == 0: 0
+    elif s.plat == 3 and s.kind == 1: 1
+    elif s.plat == 3: 2
+    elif s.plat == 0: 3
+    else: 4
+  unicodeSubs.sort(proc(a, b: Sub): int = cmp(subPriority(a),
+    subPriority(b)))
   # Full-repertoire formats first so first mapping wins.
   for pass in [12, 4]:
     for s in unicodeSubs:

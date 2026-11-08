@@ -14,6 +14,8 @@ type
     version*: string
     pages*: seq[PageBox]
     hasEncrypt*: bool
+    recovered*: bool ## xref rebuilt by lenient/brute-force recovery
+    recoveryNotes*: seq[string] ## what recovery skipped or rebuilt
 
 proc pageCount*(d: PdfDocument): int {.inline.} = d.pages.len
 
@@ -27,7 +29,8 @@ proc readPdfBytes*(data: string, limits = defaultPdfLimits(),
   var doc = openDoc(data, limits, password)
   let boxes = doc.pageBoxes()
   PdfDocument(version: parsePdfVersion(head), pages: boxes,
-    hasEncrypt: doc.crypt.present)
+    hasEncrypt: doc.crypt.present, recovered: doc.recovered,
+    recoveryNotes: doc.recoveryNotes)
 
 proc readPdfBytes*(data: seq[byte],
     limits = defaultPdfLimits(), password = ""): PdfDocument =
@@ -52,7 +55,8 @@ proc openPdf*(path: string, limits = defaultPdfLimits(),
   var doc = openDoc(src, limits, password)
   let boxes = doc.pageBoxes()
   PdfDocument(version: parsePdfVersion(head), pages: boxes,
-    hasEncrypt: doc.crypt.present)
+    hasEncrypt: doc.crypt.present, recovered: doc.recovered,
+    recoveryNotes: doc.recoveryNotes)
 
 proc openPdfPassword*(data: string,
     limits = defaultPdfLimits()): bool =

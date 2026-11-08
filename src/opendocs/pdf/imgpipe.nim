@@ -393,13 +393,13 @@ proc maskGray(d: var PdfDoc, m: CosObj, w, h: int): string =
         coded = true
   var gray = ""
   if coded:
-    let r = decodeJpeg(toBytes(decodeCosStream(s)))
+    let r = decodeJpeg(toBytes(decodeCosStream(s, d.limits)))
     if not r.ok:
       pdfFail("cannot decode mask of image (" & r.err.msg & ")")
     let dp = dynToPixels(r.value)
     gray = grayStr(dp.pixels, dp.width, dp.height, dp.comps)
   else:
-    gray = unpackSamples(decodeCosStream(s), mw, mh, bpc, 1,
+    gray = unpackSamples(decodeCosStream(s, d.limits), mw, mh, bpc, 1,
       decodeRange(s.dictGet("Decode"), 1))
   if mw != w or mh != h or gray.len != w * h:
     pdfFail("mask size " & $mw & "x" & $mh &

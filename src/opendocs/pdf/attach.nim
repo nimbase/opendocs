@@ -106,7 +106,7 @@ proc embeddedFiles*(d: var PdfDoc): seq[FileAttachment] =
     if stm.dictGet("Subtype").kind == coName:
       mime = stm.dictGet("Subtype").name
     result.add(FileAttachment(name: key, fileName: fileName, desc: desc,
-      mime: mime, data: decodeCosStream(stm)))
+      mime: mime, data: decodeCosStream(stm, d.limits)))
 
 proc specDict(name, desc, mime: string, efNum: int): CosObj =
   var keys = @["Type", "F", "UF"]

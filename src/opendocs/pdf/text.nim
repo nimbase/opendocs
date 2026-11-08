@@ -187,7 +187,7 @@ proc loadDecoder*(d: var PdfDoc, fontRef: CosObj,
   if uni.kind == coRef:
     uni = d.resolve(uni)
   if uni.kind == coStream:
-    result.cmap = parseToUnicode(decodeCosStream(uni), d.limits)
+    result.cmap = parseToUnicode(decodeCosStream(uni, d.limits), d.limits)
     result.hasCMap = true
     if composite:
       result.codeLen = clamp(result.cmap.maxKeyLen, 1, 4)
@@ -195,7 +195,7 @@ proc loadDecoder*(d: var PdfDoc, fontRef: CosObj,
   if enc.kind == coRef:
     enc = d.resolve(enc)
   if composite and enc.kind == coStream:
-    let em = parseCMap(decodeCosStream(enc), d.limits)
+    let em = parseCMap(decodeCosStream(enc, d.limits), d.limits)
     if em.cids.len > 0:
       result.encCids = em.cids
       result.hasEncCids = true
@@ -283,7 +283,7 @@ proc loadDecoder*(d: var PdfDoc, fontRef: CosObj,
       if gidMap.kind == coRef:
         gidMap = d.resolve(gidMap)
       if gidMap.kind == coStream:
-        let raw = decodeCosStream(gidMap)
+        let raw = decodeCosStream(gidMap, d.limits)
         var i = 0
         while i + 1 < raw.len:
           result.cidToGid.add(
@@ -298,7 +298,7 @@ proc loadDecoder*(d: var PdfDoc, fontRef: CosObj,
           if f.kind == coRef:
             f = d.resolve(f)
           if f.kind == coStream:
-            let cm = parseSfntCmap(decodeCosStream(f))
+            let cm = parseSfntCmap(decodeCosStream(f, d.limits))
             if cm.len > 0:
               result.sfntCmap = cm
               result.hasSfntCmap = true

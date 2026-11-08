@@ -161,7 +161,7 @@ proc loadFontBytes*(fontDict: CosObj, d: var PdfDoc): string =
     if s.kind == coRef:
       s = d.resolve(s)
     if s.kind == coStream:
-      let raw = decodeCosStream(s)
+      let raw = decodeCosStream(s, d.limits)
       if raw.len == 0:
         pdfFail("empty embedded font program in /" & key)
       return raw

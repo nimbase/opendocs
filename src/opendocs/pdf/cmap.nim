@@ -67,27 +67,26 @@ type
     cids*: Table[int, int] ## source code -> CID from cidchar/cidrange
     hasCids*: bool
 
-proc hexVal(c: char): int =
-  case c
-  of '0'..'9': ord(c) - ord('0')
-  of 'a'..'f': ord(c) - ord('a') + 10
-  of 'A'..'F': ord(c) - ord('A') + 10
-  else: pdfFail("bad hex digit in CMap <" & $c & ">")
-
-proc cmapHex(s: string): seq[byte] =
-  ## Hex inside angle brackets, whitespace-tolerant.
+proc cmapHex(s: string): tuple[val: seq[byte], ok: bool] =
+  ## Hex inside angle brackets, whitespace-tolerant. Bad digits make the
+  ## token unusable (caller skips it) instead of killing the whole map.
   var hi = -1
   for c in s:
     if c in {' ', '\x09', '\x0A', '\x0C', '\x0D'}:
       continue
-    let v = hexVal(c)
+    let v = case c
+      of '0'..'9': ord(c) - ord('0')
+      of 'a'..'f': ord(c) - ord('a') + 10
+      of 'A'..'F': ord(c) - ord('A') + 10
+      else: return (@[], false)
     if hi < 0:
       hi = v
     else:
-      result.add(byte(hi * 16 + v))
+      result.val.add(byte(hi * 16 + v))
       hi = -1
   if hi >= 0:
-    result.add(byte(hi * 16))
+    result.val.add(byte(hi * 16))
+  result.ok = true
 
 proc utf16be(s: seq[byte]): string =
   ## Decode UTF-16BE with surrogate pairs into UTF-8.
@@ -207,7 +206,7 @@ proc addBfRange(m: var CMap, lo, hi: seq[byte], dsts: seq[seq[byte]],
   if dsts.len == 1:
     let base = dsts[0]
     if base.len == 0:
-      pdfFail("bad bfrange destination in ToUnicode CMap")
+      return # malformed destination: skip the range, keep the map
     var v = codeInt(base)
     var k = codeInt(lo)
     while k <= codeInt(hi):
@@ -244,6 +243,10 @@ proc parseCMap*(data: string,
   var inArr = false
   var cidVal = 0
   var haveCid = false
+  var skipHexes = 0
+  ## Orphan destinations after a bad token: a bad source breaks its pair
+  ## (bfchar) or triple (bfrange), so the following destination token(s)
+  ## are skipped too; a bad destination only drops the pending pair.
   proc dropFirst(s: var seq[seq[byte]], n: int) =
     if n >= s.len:
       s = @[]
@@ -301,16 +304,32 @@ proc parseCMap*(data: string,
           dropFirst(hexes, 2)
           result.addBfRange(lo, hi, arr, limits)
     of tkHex:
+      if skipHexes > 0:
+        dec skipHexes
+        continue
       let h = cmapHex(t.text)
+      if not h.ok:
+        # Bad token poisons its entry: skip the orphan destination(s)
+        # that would otherwise pair with the next good source.
+        case mode
+        of 1: skipHexes = 1 - (hexes.len mod 2)
+        of 2:
+          if inArr:
+            arr = @[]
+          else:
+            skipHexes = 2 - (hexes.len mod 3)
+        else: discard
+        hexes = @[]
+        continue
       case mode
       of 1:
-        hexes.add(h)
+        hexes.add(h.val)
         result.flushHex()
       of 2:
         if inArr:
-          arr.add(h)
+          arr.add(h.val)
         else:
-          hexes.add(h)
+          hexes.add(h.val)
           while hexes.len >= 3:
             let lo = hexes[0]
             let hi = hexes[1]
@@ -318,7 +337,7 @@ proc parseCMap*(data: string,
             dropFirst(hexes, 3)
             result.addBfRange(lo, hi, @[dst], limits)
       of 3:
-        hexes.add(h)
+        hexes.add(h.val)
         while hexes.len >= 2:
           let lo = hexes[0]
           let hi = hexes[1]
@@ -326,10 +345,10 @@ proc parseCMap*(data: string,
           result.codes.add(CodeRange(lo: codeInt(lo),
             hi: codeInt(hi), len: max(lo.len, hi.len)))
       of 4:
-        hexes.add(h)
+        hexes.add(h.val)
         result.flushHex()
       of 5:
-        hexes.add(h)
+        hexes.add(h.val)
         result.flushHex()
       else:
         discard
@@ -338,27 +357,33 @@ proc parseCMap*(data: string,
       of "beginbfchar":
         mode = 1
         hexes = @[]
+        skipHexes = 0
       of "beginbfrange":
         mode = 2
         hexes = @[]
         inArr = false
+        skipHexes = 0
       of "begincodespacerange":
         mode = 3
         hexes = @[]
+        skipHexes = 0
       of "begincidchar":
         mode = 4
         hexes = @[]
         haveCid = false
+        skipHexes = 0
       of "begincidrange":
         mode = 5
         hexes = @[]
         haveCid = false
+        skipHexes = 0
       of "endbfchar", "endbfrange", "endcodespacerange", "endcidchar",
           "endcidrange":
         mode = 0
         hexes = @[]
         inArr = false
         haveCid = false
+        skipHexes = 0
       else:
         if (mode == 4 or mode == 5) and not haveCid:
           try:

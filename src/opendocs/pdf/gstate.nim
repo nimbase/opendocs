@@ -9,6 +9,7 @@
 ## Matrices are `[a b c d e f]`. concat(m1, m2) returns m1 x m2, which
 ## is what `cm` does: CTM = M x CTM.
 
+import std/tables
 import ./types
 import ./lexer
 import ./cos
@@ -81,8 +82,11 @@ proc applyOp*(gs: var GState, op: ContentOp) =
     gs.stack.add(SavedState(ctm: gs.ctm, textMatrix: gs.textMatrix,
       textLine: gs.textLine, text: gs.text))
   of "Q":
+    # Unmatched Q is ignored (reference parity: stray restorations come
+    # from damaged content, and failing the whole page over one hurts
+    # more than a stale graphics state).
     if gs.stack.len == 0:
-      pdfFail("unbalanced Q (graphics stack underflow)")
+      return
     let s = gs.stack[^1]
     gs.stack.setLen(gs.stack.len - 1)
     gs.ctm = s.ctm
@@ -138,11 +142,16 @@ proc walkOps*(ops: seq[ContentOp]): GState =
     result.applyOp(op)
 
 proc collectPages(d: var PdfDoc, nodeRef: CosObj,
-    parentRes: CosObj, depth: int, pages: var seq[CosObj]) =
+    parentRes: CosObj, depth: int, pages: var seq[CosObj],
+    seen: var Table[int, bool]) =
   if depth > d.limits.maxWalkDepth:
     pdfFail("page tree exceeds nesting depth " & $d.limits.maxWalkDepth)
   if pages.len >= d.limits.maxPages:
     pdfFail("page count exceeds limit " & $d.limits.maxPages)
+  if nodeRef.kind == coRef:
+    if seen.hasKey(nodeRef.refNum):
+      pdfFail("page tree cycle at object " & $nodeRef.refNum)
+    seen[nodeRef.refNum] = true
   let node = d.resolve(nodeRef)
   if node.kind != coDict:
     pdfFail("page tree node is not a dictionary")
@@ -155,7 +164,7 @@ proc collectPages(d: var PdfDoc, nodeRef: CosObj,
     for k in kids.items:
       if k.kind != coRef:
         pdfFail("page tree kid is not an indirect reference")
-      d.collectPages(k, res, depth + 1, pages)
+      d.collectPages(k, res, depth + 1, pages, seen)
   else:
     pages.add(node)
 
@@ -167,7 +176,8 @@ proc pageDicts*(d: var PdfDoc): seq[CosObj] =
   if pagesRef.kind != coRef:
     pdfFail("PDF catalog missing /Pages reference")
   result = @[]
-  d.collectPages(pagesRef, CosObj(kind: coNull), 0, result)
+  var seen = initTable[int, bool]()
+  d.collectPages(pagesRef, CosObj(kind: coNull), 0, result, seen)
 
 proc pageResources*(d: var PdfDoc, index: int): CosObj =
   ## Inherited /Resources for one page; coNull when absent entirely.
@@ -205,7 +215,7 @@ proc pageContentStream*(d: var PdfDoc, index: int): string =
   for s in streams:
     if result.len > 0:
       result.add("\n")
-    result.add(decodeCosStream(s))
+    result.add(decodeCosStream(s, d.limits))
 
 proc walkPageOps*(d: var PdfDoc, index: int): seq[ContentOp] =
   ## Parsed operators for one page's own /Contents (empty when absent).
@@ -365,7 +375,7 @@ proc walkInto(d: var PdfDoc, gs: var GState, ops: seq[ContentOp],
       formRes = own
     let bb = formBBox(xo)
     let device = if bb.present: deviceBox(bb.rect, gs.ctm) else: bbox
-    let inner = parseContentStream(decodeCosStream(xo), d.limits)
+    let inner = parseContentStream(decodeCosStream(xo, d.limits), d.limits)
     acc.add(WalkedOp(op: enterQ, resources: formRes, ctm: gs.ctm,
       bbox: bbox, hasBBox: hasBBox, depth: depth))
     acc.add(WalkedOp(op: enterCm, resources: formRes, ctm: gs.ctm,

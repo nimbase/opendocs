@@ -67,6 +67,37 @@ proc ncompOf*(cs: PdfColorSpace): int =
   of ckICCBased: cs.n
   of ckSeparation: ncompOf(cs.sepAlt)
 
+proc ccittImageSamples(d: var PdfDoc, obj: CosObj,
+    names: seq[string], width, height: int): string =
+  ## Per-filter decode with image-aware CCITT params: absent Columns
+  ## defaults to /Width, Rows resolves against /Height with max (lenient
+  ## like the reference: under-declared Rows never truncates the image).
+  ## Other filters run through the generic chain one at a time, so
+  ## combinations like [ASCII85Decode CCITTFaxDecode] decode in order.
+  var plist: seq[CosObj] = @[]
+  let dp = obj.dictGet("DecodeParms")
+  if dp.kind == coNull:
+    for _ in names: plist.add(CosObj(kind: coNull))
+  elif dp.kind == coDict:
+    for _ in names: plist.add(dp)
+  elif dp.kind == coArray:
+    if dp.items.len != names.len:
+      pdfFail("/DecodeParms array length must match /Filter")
+    plist = dp.items
+  else:
+    pdfFail("/DecodeParms must be a dict, array, or null")
+  result = obj.raw
+  for i, name in names:
+    if name == "CCITTFaxDecode":
+      let cp = ccittParms(plist[i])
+      let cols = if cp.columns > 0: cp.columns else: width
+      let tgt = max(cp.rows, height)
+      result = ccittFaxDecode(result, cols, tgt, cp.k, cp.blackIs1,
+        cp.byteAlign, cp.endOfLine, cp.damaged, d.limits)
+    else:
+      result = decodeChain(CosObj(kind: coName, name: name), plist[i],
+        result, d.limits)
+
 proc parseColorSpace*(d: var PdfDoc, cs: CosObj): PdfColorSpace =
   ## Resolve a color space value (name, array or reference).
   var v = cs
@@ -101,7 +132,7 @@ proc parseColorSpace*(d: var PdfDoc, cs: CosObj): PdfColorSpace =
     if lookup.kind == coStr:
       discard
     elif lookup.kind == coStream:
-      lookup = CosObj(kind: coStr, sval: decodeCosStream(lookup))
+      lookup = CosObj(kind: coStr, sval: decodeCosStream(lookup, d.limits))
     else:
       pdfFail("bad /Indexed lookup table")
     let want = (hival + 1) * ncompOf(cs)
@@ -125,7 +156,7 @@ proc parseColorSpace*(d: var PdfDoc, cs: CosObj): PdfColorSpace =
     if a.kind != coNull:
       alt = parseColorSpace(d, a)
     PdfColorSpace(kind: ckICCBased, n: n,
-      profile: decodeCosStream(s), iccAlt: alt)
+      profile: decodeCosStream(s, d.limits), iccAlt: alt)
   of "Separation":
     if v.items.len < 4:
       pdfFail("bad /Separation color space")
@@ -225,18 +256,28 @@ proc parseRawImage*(d: var PdfDoc, name: string,
   var coded = false
   var names: seq[string] = @[]
   if obj.kind == coStream:
-    # Filter chain decoded here (DCT/JPX/CCITT/JBIG2 pass through
-    # for the imgpipe back half); Flate/LZW/ASCII arrive as samples.
-    samples = decodeCosStream(obj)
+    # Filter chain decoded here (DCT/JPX/JBIG2 pass through for the
+    # imgpipe back half); Flate/LZW/ASCII arrive as samples, and CCITT
+    # arrives decoded via image-aware params (see ccittImageSamples).
     let f = obj.dictGet("Filter")
     if f.kind == coName:
-      names.add(f.name)
+      names.add(canonFilterName(f.name))
     elif f.kind == coArray:
       for it in f.items:
-        names.add(it.asName())
+        names.add(canonFilterName(it.asName()))
+    elif f.kind != coNull:
+      pdfFail("bad image /Filter value")
+    var sawCcitt = false
+    for n in names:
+      if n == "CCITTFaxDecode":
+        sawCcitt = true
+        break
+    if sawCcitt:
+      samples = d.ccittImageSamples(obj, names, w, h)
+    else:
+      samples = decodeCosStream(obj, d.limits)
   for n in names:
-    if n in ["DCTDecode", "DCT", "JPXDecode", "JPX",
-        "CCITTFaxDecode", "CCF", "JBIG2Decode"]:
+    if n in ["DCTDecode", "DCT", "JPXDecode", "JPX", "JBIG2Decode"]:
       coded = true
   var coding = ""
   if coded:
