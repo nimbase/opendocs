@@ -9,9 +9,10 @@
 ##
 ## Divergences from excelize, all documented in `xlsx/numfmt.nim`:
 ## bare booleans read true, 8-digit rgb honors alpha, theme colors
-## resolve on runs, unsupported locales render en-US-shaped output
-## instead of raw, and `[$...]` currency strings are dropped only in
-## date sections (kept in number sections, like excelize).
+## resolve on runs, border styles and fill patterns surface as raw OOXML
+## names (not enum indexes), and there is no `CultureInfo` option (so
+## `ko-KR +2333` and the gannen code-info table are unreachable).
+## Locale coverage lives in `t_xlsx_numfmt_locale.nim`.
 
 import std/[unittest, tables]
 import opendocs/xlsx
@@ -90,9 +91,12 @@ const CustomOracle = [
   ("[<100]\"low\";\"high\"", "150", "low"),
 ]
 
-func renderWith(code, value: string): tuple[applied: bool, text: string] =
+proc renderWith(code, value: string): tuple[applied: bool, text: string] =
   var st = XlsxStylesheet(
-    numFmts: {164: code}.toTable, cellXfs: @[0, 164])
+    numFmts: {164: code}.toTable, cellXfs: @[XlsxXf(fontId: -1,
+      fillId: -1, borderId: -1, xfId: -1),
+      XlsxXf(numFmtId: 164, fontId: -1, fillId: -1, borderId: -1,
+        xfId: -1)])
   let f = XlsxFile(styles: st)
   let info = f.formatInfo(value, ctyNumber, 1)
   (info.applied, info.text)

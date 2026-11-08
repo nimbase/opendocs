@@ -4,13 +4,15 @@
 ## Authors, Copyright (c) 2011-2017 Geoffrey J. Teale, BSD-3-Clause.
 ## SPDX-License-Identifier: MIT AND BSD-3-Clause
 ##
-## Value formatting: eager stylesheet plus builtin number/date formats.
+## Value formatting: eager stylesheet plus builtin and custom
+## number/date formats with full locale tables.
 ##
 ## Ports of the excelize `formattedValue` dispatch, `getCellDefault`
 ## precision trim, `timeFromExcelTime` (incl. the 1900 leap quirk and its
-## renderer compensations), `floatToFraction`, and the observable behavior
-## of the `nfp` format engine for every builtin format id. Custom format
-## codes (`numFmts`) fall back to raw values until Phase C.
+## renderer compensations), `floatToFraction`, locale resolution and era
+## handling, and the observable behavior of the `nfp` format engine for
+## every builtin format id. Custom format codes (`numFmts`) render
+## through the shared renderer; unrenderable codes return raw.
 
 import std/[math, strutils]
 
@@ -599,9 +601,13 @@ func tokenizeDateCode(code: string): seq[DateTok] =
     if timePrev or secondsNext:
       result[k] = (dtkMinute, t.width, t.text)
 
-type DateParts = tuple[yr, moNum: int, moAbbr, moFull: string, d, h,
+type DateParts = tuple[yr, moNum, moNameIdx, rawY, rawMo, rawD: int,
+  moAbbr, moFull: string, d, h,
   mi, s: int, msDigit: string, ap: string, elH, elM, elS: int,
-  weekday: int] ## weekday: 0=Sunday (Go `time.Weekday` parity)
+  weekday: int] ## weekday: 0=Sunday (Go `time.Weekday` parity).
+  ## `moNameIdx` is the lag-corrected month for month NAMES
+  ## (excelize `localMonthsName` parity); `rawY/Mo/D` is the rounded
+  ## civil date before renderer clamps (era/ROC year parity).
 
 func dateParts(serial: float, date1904: bool,
     wantMs: bool): tuple[ok: bool, dp: DateParts] =
@@ -610,8 +616,10 @@ func dateParts(serial: float, date1904: bool,
   ## days use the lag-corrected serial; month NAMES use the corrected
   ## serial (`localMonthsName` parity).
   if serial < 0.0:
-    return (false, (yr: 0, moNum: 0, moAbbr: "", moFull: "", d: 0, h: 0,
-      mi: 0, s: 0, msDigit: "", ap: "", elH: 0, elM: 0, elS: 0, weekday: 0))
+    return (false, (yr: 0, moNum: 0, moNameIdx: 0, rawY: 0, rawMo: 0,
+      rawD: 0, moAbbr: "", moFull: "", d: 0, h: 0,
+      mi: 0, s: 0, msDigit: "", ap: "", elH: 0, elM: 0, elS: 0,
+      weekday: 0))
   var t = serialToCivil(serial, date1904)
   if not wantMs and t.ns >= 500000000:
     # dateTimeHandler second rounding (skipped for ms formats)
@@ -655,7 +663,8 @@ func dateParts(serial: float, date1904: bool,
   let yy = if t.mo < 3: t.y - 1 else: t.y
   let weekday = (yy + yy div 4 - yy div 100 + yy div 400 + mAdj +
     t.d) mod 7
-  (true, (yr, moNum, monthAbbr[nc.mo - 1], monthFull[nc.mo - 1], day,
+  (true, (yr, moNum, nc.mo, t.y, t.mo, t.d, monthAbbr[nc.mo - 1],
+    monthFull[nc.mo - 1], day,
     t.h, t.mi, t.s, msDigit, ap, int(floor(daysF * 24.0)),
     int(floor(daysF * 1440.0)), int(floor(daysF * 86400.0)), weekday))
 
@@ -681,8 +690,8 @@ func renderDateToks(toks: seq[DateTok], serial: float,
       if t.width == 1: res &= $dp.moNum
       elif t.width == 2: res &= align($dp.moNum, 2, '0')
       elif t.width == 3: res &= dp.moAbbr
-      elif t.width == 4: res &= dp.moFull
-      else: res &= dp.moAbbr[0 .. 0]
+      elif t.width == 4 or t.width > 5: res &= dp.moFull
+      else: res &= dp.moAbbr[0 .. 0] # width 5: narrow (first letter)
     of dtkDay:
       if t.width == 1: res &= $dp.d
       elif t.width == 2: res &= align($dp.d, 2, '0')
@@ -1055,7 +1064,27 @@ proc fractionCustom(frac: float, t: NumFmtToken,
       $int(roundHalfAway(den))
   ""
 
-proc printNumberLiteralCustom(cf: CustomFmt, text: string): string =
+proc applyCurrencyToken(cf: var CustomFmt, loc: var XlsxLocale,
+    hasTag: var bool, t: NumFmtToken): bool =
+  ## One `CurrencyLanguage` token (excelize `currencyLanguageHandler`
+  ## minus the opts-driven long-date branches, which need a
+  ## `CultureInfo` this reader does not have): parts run in order; a
+  ## currency string latches and ends the token, so a tag sharing its
+  ## token is ignored (`[$€-42D]` renders en-US). An unresolvable
+  ## language fails the token. Number sections ignore the failure;
+  ## date sections render raw on it.
+  for p in t.parts:
+    if p.kind == "CurrencyString":
+      cf.currencyString = p.value
+      return true
+    if p.kind == "LanguageInfo":
+      hasTag = true
+      let (found, l) = resolveLocale(p.value)
+      if not found: return false
+      loc = l
+  true
+
+proc printNumberLiteralCustom(cf: var CustomFmt, text: string): string =
   ## Port of excelize `printNumberLiteral`: walk the section tokens,
   ## emitting literals and consuming the preformatted number through
   ## digit placeholders.
@@ -1092,8 +1121,13 @@ proc printNumberLiteralCustom(cf: CustomFmt, text: string): string =
       hashZeroLen += tk.text.len
   var useFraction = false
   var frac = 0.0
+  var locIg = XlsxLocaleById[1033]
+  var tagIg = false
   for idx, tk in items:
     if tk.kind == "CurrencyLanguage":
+      # excelize `printNumberLiteral` calls the handler and emits
+      # unconditionally, IGNORING the unsupported-locale error.
+      discard applyCurrencyToken(cf, locIg, tagIg, tk)
       res &= cf.currencyString
     if tk.kind == "Literal":
       if not (cf.scalingFactor > 0 and idx >= cf.scalingStart and
@@ -1171,36 +1205,13 @@ proc isMonthTokenCustom(items: seq[NumFmtToken], i: int): bool =
 proc renderCustomDate(cf: var CustomFmt,
     date1904: bool): tuple[ok: bool, text: string] =
   ## Custom date sections over nfp tokens (excelize `dateTimeHandler`
-  ## order). Locale tags accept en-US aliases (`409`, `F800`,
-  ## `x-sysdate`, `1010000`, `F400`, `x-systime`); anything else renders
-  ## raw, like excelize's `ErrUnsupportedNumberFormat` path.
+  ## order). The locale resolves progressively during the walk, exactly
+  ## like excelize's `localCode`: names use the lag-corrected month
+  ## index, plain numbers the clamped parts, era years the raw civil
+  ## date. Unknown tags render raw (`ErrUnsupportedNumberFormat`).
   let items = cf.sections[cf.sectionIdx].items
-  var localeOk = true
-  for t in items:
-    if t.kind != "CurrencyLanguage": continue
-    var tag = ""
-    for p in t.parts:
-      if p.kind == "LanguageInfo": tag = p.value
-      if p.kind == "CurrencyString": cf.currencyString = p.value
-    if tag == "": continue
-    # en-US aliases (excelize maps F800/x-sysdate/1010000 and
-    # F400/x-systime onto 409 when no long-date opts are set).
-    if tag.toUpperAscii() in ["409", "F800", "X-SYSDATE", "1010000",
-        "F400", "X-SYSTIME"]:
-      continue
-    # Other numeric locale tags render with en-US month/day names and
-    # AM/PM for now; the full locale table is Phase C locale territory.
-    # Non-numeric tags (and anything else) select raw, like excelize's
-    # ErrUnsupportedNumberFormat path.
-    var hexTag = true
-    if tag.len == 0 or tag.len > 8: hexTag = false
-    else:
-      for ch in tag:
-        if ch notin {'0' .. '9', 'a' .. 'f', 'A' .. 'F', '-'}:
-          hexTag = false
-          break
-    if not hexTag: localeOk = false
-  if not localeOk: return (false, cf.value)
+  var loc = XlsxLocaleById[1033] ## en-US until a tag says otherwise
+  var hasTag = false
   var wantMs = false
   for t in items:
     if t.kind == "ZeroPlaceHolder" and t.text.len > 0:
@@ -1208,14 +1219,20 @@ proc renderCustomDate(cf: var CustomFmt,
       break
   let (ok, dp) = dateParts(cf.number, date1904, wantMs)
   if not ok: return (false, "")
-  var res = cf.currencyString
+  var res = ""
   var ap = ""
+  var useGannen = false
   for i, t in items:
     if t.kind == "Literal":
       res &= t.text
       continue
     if t.kind == "DecimalPoint":
       res &= "."
+      continue
+    if t.kind == "CurrencyLanguage":
+      if not applyCurrencyToken(cf, loc, hasTag, t):
+        return (false, cf.value)
+      res &= cf.currencyString
       continue
     if t.kind == "ZeroPlaceHolder":
       var w = t.text.len
@@ -1233,6 +1250,8 @@ proc renderCustomDate(cf: var CustomFmt,
       continue
     if t.kind != "DateTimes": continue
     let up = t.text.toUpperAscii()
+    let ja = hasTag and "ja-JP" in loc.tags
+    let tw = hasTag and "zh-TW" in loc.tags
     if up in ["AM/PM", "A/P", "上午/下午"]:
       if ap == "":
         var nextH = -1
@@ -1241,7 +1260,10 @@ proc renderCustomDate(cf: var CustomFmt,
               'H' in items[j].text.toUpperAscii():
             nextH = j
             break
-        let parts = t.text.split('/')
+        # excelize `localAmPm`: the locale format wins once a tag
+        # resolved; otherwise the token text splits (en-US parity).
+        let src = if hasTag: loc.apFmt else: t.text
+        let parts = src.split('/')
         ap = parts[0]
         if nextH >= 0:
           let (hok, hdp) = dateParts(cf.number, false, wantMs)
@@ -1256,31 +1278,77 @@ proc renderCustomDate(cf: var CustomFmt,
         else:
           res &= (if l == 1: $dp.mi else: align($dp.mi, 2, '0'))
         continue
+      # Names use the lag-corrected index (excelize `localMonthsName`).
       if l == 3:
-        res &= monthAbbr[dp.moNum - 1]
+        res &= loc.monthsAbbrev[dp.moNameIdx - 1]
         continue
       if l == 4 or l > 5:
-        res &= monthFull[dp.moNum - 1]
+        res &= loc.monthsFull[dp.moNameIdx - 1]
         continue
-      res &= monthAbbr[dp.moNum - 1][0 .. 0]
+      res &= loc.monthsNarrow[dp.moNameIdx - 1]
       continue
     if 'Y' in up:
+      # excelize `yearsHandler` Y branch (ko-KR +2333 needs a
+      # CultureInfo opt this reader does not have).
       if t.text.len <= 2: res &= align($(dp.yr mod 100), 2, '0')
       else: res &= $dp.yr
       continue
+    if 'G' in up and (ja or tw):
+      # Era names (excelize `japaneseYearHandler` / ROC handler G
+      # branch). Non-ja/zh tokens with G emit nothing (fall through).
+      if tw:
+        var gy = dp.yr - rocEpochYear + 1
+        if gy == 1: useGannen = loc.useGannen
+        var name = if t.text.len < 3: rocEraNames[1] else: rocEraNames[0]
+        if gy < 0: name &= rocEraNames[2]
+        res &= name
+      else:
+        let ei = japaneseEraIndex(dp.rawY, dp.rawMo, dp.rawD)
+        if ei >= 0:
+          useGannen = false # ja-JP LCIDs never set it (parity latch)
+          if t.text.len == 1:
+            res &= japaneseEraSymbols[ei]
+          elif t.text.len == 2:
+            res &= japaneseEraNames[ei][0 .. 2] # first 3 BYTES (Go [:3])
+          else:
+            res &= japaneseEraNames[ei]
+      # A trailing E in the same token still renders below.
     if 'E' in up:
+      if ja:
+        let ei = japaneseEraIndex(dp.rawY, dp.rawMo, dp.rawD)
+        if ei < 0:
+          res &= $dp.rawY
+        else:
+          let ey = dp.rawY - japaneseEraStarts[ei][0] + 1
+          if ey == 1 and useGannen:
+            res &= "元"
+          elif t.text.len == 1 and not useGannen:
+            res &= $ey
+          elif t.text.len == 2:
+            res &= align($ey, 2, '0')
+          # longer E with an era emits nothing (parity)
+        continue
+      if tw:
+        var ry = dp.yr - rocEpochYear + 1
+        if ry < 0: ry = rocEpochYear - dp.rawY
+        if ry == 1 and useGannen:
+          res &= "元"
+        elif t.text.len == 1 and not useGannen:
+          res &= $ry
+        # EE and longer emit nothing (parity, oracle-verified)
+        continue
       res &= $dp.yr
       continue
     if 'A' in up:
       # Mirrors excelize daysHandler's "A" branch (weekday-only tokens).
-      res &= (if t.text.len == 3: weekdayAbbr[dp.weekday]
-        else: weekdayFull[dp.weekday])
+      res &= (if t.text.len == 3: loc.weekdaysAbbrev[dp.weekday]
+        else: loc.weekdaysFull[dp.weekday])
       continue
     if 'D' in up:
       if t.text.len == 1: res &= $dp.d
       elif t.text.len == 2: res &= align($dp.d, 2, '0')
-      elif t.text.len == 3: res &= weekdayAbbr[dp.weekday]
-      else: res &= weekdayFull[dp.weekday]
+      elif t.text.len == 3: res &= loc.weekdaysAbbrev[dp.weekday]
+      else: res &= loc.weekdaysFull[dp.weekday]
       continue
     if 'H' in up:
       var h = dp.h
@@ -1289,12 +1357,15 @@ proc renderCustomDate(cf: var CustomFmt,
       while j < items.len:
         if items[j].kind == "DateTimes":
           if 'H' in items[j].text.toUpperAscii(): break
-          if items[j].text.toUpperAscii() in ["AM/PM", "A/P"]:
+          if items[j].text.toUpperAscii() in ["AM/PM", "A/P", "上午/下午"]:
             apLate = items[j].text
             break
         inc j
       if apLate != "":
-        let parts = apLate.split('/')
+        # excelize `apNext`: the LOCALE format splits once a tag
+        # resolved; otherwise the token text (en-US parity).
+        let src = if hasTag: loc.apFmt else: apLate
+        let parts = src.split('/')
         ap = parts[0]
         if h >= 12 and parts.len > 1: ap = parts[1]
         if h > 12: h -= 12

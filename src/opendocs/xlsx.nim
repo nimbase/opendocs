@@ -26,6 +26,8 @@ include xlsx/base
 include xlsx/cell
 include xlsx/styles
 include xlsx/numfmttok
+include xlsx/locale_data
+include xlsx/locale
 include xlsx/numfmt
 include xlsx/workbook
 include xlsx/sharedstrings

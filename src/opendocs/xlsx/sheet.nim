@@ -532,6 +532,25 @@ proc formatApplied*(f: XlsxFile, sheet, cellRef: string): bool =
   else:
     return formatInfo(f, c.raw, c.cellType, c.styleIdx).applied
 
+proc getCellStyleIdx*(f: XlsxFile, sheet, cellRef: string): int =
+  ## `cellXfs` index of a cell (0 when unstyled or absent). Merge-covered
+  ## cells report their anchor's index, like the value getters.
+  let (col, row) = splitCellRef(cellRef)
+  let s = getSheet(f, sheet)
+  let (covered, anchor) = mergedCell(s, col, row)
+  if covered: return anchor.styleIdx
+  let (found, c) = findCell(s, col, row)
+  if not found: 0 else: c.styleIdx
+
+proc getCellStyle*(f: XlsxFile, sheet, cellRef: string): XlsxStyle =
+  ## Resolved style of a cell. Unstyled, absent, and out-of-range `s`
+  ## cells report the default style (no parts), which is current
+  ## formatting behaviour; only bad references and missing sheets raise.
+  let idx = getCellStyleIdx(f, sheet, cellRef)
+  if idx < 0 or idx >= f.styles.cellXfs.len:
+    return XlsxStyle()
+  getStyle(f, idx)
+
 proc getCellFormula*(f: XlsxFile, sheet, cellRef: string): string =
   ## Formula text ("", when the cell has none). Merge-covered cells return
   ## their anchor formula.

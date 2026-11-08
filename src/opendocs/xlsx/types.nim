@@ -85,7 +85,9 @@ type
     ## `rPr`-only extras excelize drops (`scheme`, integer `family`).
     ## excelize quirk preserved: the typeface travels in `name` (its
     ## `Font.Family` carries the `rFont` value, not the integer family).
-    name*: string ## typeface (`rFont`), "" when absent
+    ## Used for both rich-text runs and stylesheet fonts (the two parse
+    ## sites differ only in `name` vs `rFont`).
+    name*: string ## typeface (`rFont`/`name`), "" when absent
     size*: float64 ## 0.0 when absent
     bold*, italic*, strike*, outline*, shadow*, condense*,
       extend*: bool
@@ -99,6 +101,89 @@ type
     color*: Color ## resolved run color (rgb/theme/indexed); invalid
       ## when no `color` element or when unresolvable (e.g. no theme
       ## part, like excelize's empty-string result)
+
+  XlsxFill* = object
+    ## Cell fill, excelize `Fill` parity (`xmlStyles.go`) with resolved
+    ## colors instead of hex strings. `kind` is `"pattern"`, `"gradient"`,
+    ## or `""` when the fill record is absent.
+    kind*: string
+    pattern*: string ## `patternType`, e.g. `"solid"`; "" when absent
+    fgColor*, bgColor*: Color ## invalid when absent or `auto`
+    gradientColors*: seq[Color] ## gradient stops in file order
+    gradientType*: string ## e.g. `"path"`; "" when absent
+    gradientDegree*: float64 ## 0.0 when absent
+    shading*: int ## gradient variant index (`styleFillVariants`
+      ## order), -1 when not a gradient or unmatched
+
+  XlsxBorderSide* = object
+    ## One border edge. `style` is the raw name (`"thin"`, ...), "" when
+    ## the edge carries no style; `color` is invalid when unresolvable.
+    style*: string
+    color*: Color
+
+  XlsxBorder* = object
+    ## Cell border edges plus diagonal/outline flags. Sides default to
+    ## empty (no style, invalid color) when the record omits them.
+    left*, right*, top*, bottom*, diagonal*, vertical*,
+      horizontal*: XlsxBorderSide
+    diagonalUp*, diagonalDown*, outline*: bool
+
+  XlsxAlignment* = object
+    ## Cell alignment, excelize `Alignment` parity (`xmlStyles.go`).
+    horizontal*, vertical*: string
+    wrapText*, shrinkToFit*, justifyLastLine*: bool
+    indent*, relativeIndent*: int
+    readingOrder*: int
+    textRotation*: int
+
+  XlsxProtection* = object
+    ## Cell protection flags. Both default false when the record or the
+    ## attribute is absent (excelize `extractProtection` parity).
+    hidden*, locked*: bool
+
+  XlsxXf* = object
+    ## One `cellXfs/xf` formatting record. Ids are -1 when the attribute
+    ## is absent; `apply*` pairs follow the `has*` convention (absent
+    ## counts as apply, matching excelize's nil-means-apply checks).
+    numFmtId*: int
+    fontId*, fillId*, borderId*, xfId*: int
+    applyNumberFormat*, applyFont*, applyFill*, applyBorder*,
+      applyAlignment*, applyProtection*: bool
+    hasApplyNumberFormat*, hasApplyFont*, hasApplyFill*,
+      hasApplyBorder*, hasApplyAlignment*, hasApplyProtection*: bool
+    alignment*: XlsxAlignment
+    hasAlignment*: bool
+    protection*: XlsxProtection
+    hasProtection*: bool
+
+  XlsxStyle* = object
+    ## Resolved cell style (excelize `GetStyle` shape, Nim-ified): the
+    ## `xf` record's number format plus resolved font/fill/border/
+    ## alignment/protection. `has*` is false when the part is absent,
+    ## the apply flag forbids it, or the id is out of range.
+    numFmtId*: int
+    fontId*, fillId*, borderId*: int ## -1 when the xf omits the id
+    hasFont*: bool
+    font*: XlsxFont
+    hasFill*: bool
+    fill*: XlsxFill
+    hasBorder*: bool
+    border*: XlsxBorder
+    hasAlignment*: bool
+    alignment*: XlsxAlignment
+    hasProtection*: bool
+    protection*: XlsxProtection
+
+  XlsxLocale* = object
+    ## One locale's date-format data (excelize `languageInfo` parity):
+    ## month and weekday names plus the AM/PM format. Generated from the
+    ## pinned excelize commit; see `xlsx/locale_data.nim`.
+    tags*: seq[string]
+    monthsFull*, monthsAbbrev*, monthsNarrow*: array[12, string]
+    weekdaysFull*: array[7, string]
+    weekdaysAbbrev*: array[7, string]
+    apFmt*: string ## e.g. `"AM/PM"`, `"午前/午後"`
+    useGannen*: bool ## first-year `元` rendering (zh-TW only)
 
   XlsxRichRun* = object
     ## One rich-text run: text plus its direct formatting. Runs without
@@ -124,12 +209,14 @@ type
     hasBaseColWidth*: bool
 
   XlsxStylesheet* = object
-    ## `xl/styles.xml` subset needed for value formatting: custom format
-    ## codes (Phase C data, parsed now) and the per-xf number format ids,
-    ## plus the legacy indexed-color palette consulted by rich-text
-    ## color resolution.
+    ## `xl/styles.xml` contents: custom format codes, the full `cellXfs`
+    ## record table, font/fill/border tables, and the legacy indexed-
+    ## color palette consulted by color resolution.
     numFmts*: Table[int, string] ## custom numFmtId -> format code
-    cellXfs*: seq[int] ## numFmtId per xf (absent attr -> 0)
+    cellXfs*: seq[XlsxXf] ## `cellXfs/xf` records in file order
+    fonts*: seq[XlsxFont] ## `fonts/font` records in file order
+    fills*: seq[XlsxFill] ## `fills/fill` records in file order
+    borders*: seq[XlsxBorder] ## `borders/border` records in file order
     indexedColors*: seq[string] ## custom palette entries (raw `rgb`)
 
   XlsxFormatInfo* = object
