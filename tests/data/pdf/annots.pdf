@@ -1,0 +1,54 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R 6 0 R 7 0 R 8 0 R 9 0 R 10 0 R 11 0 R] >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>
+endobj
+5 0 obj
+<< /Type /Annot /Subtype /Link /Rect [0 0 100 20] /Border [0 0 1] /A << /S /URI /URI (https://example.com/x) >> >>
+endobj
+6 0 obj
+<< /Type /Annot /Subtype /Link /Rect [0 0 100 20] /Dest [4 0 R /Fit] >>
+endobj
+7 0 obj
+<< /Type /Annot /Subtype /Text /Rect [10 10 30 30] /Contents (Fix this) /T (Anne) /Subj (Review) /C [1 0 0] /F 4 /M (D:20260101) >>
+endobj
+8 0 obj
+<< /Type /Annot /Subtype /Square /Rect [50 50 0 0] /C [0 1 0] >>
+endobj
+9 0 obj
+<< /Type /Annot /Subtype /Highlight /Rect [0 0 60 10] /QuadPoints [0 10 60 10 0 0 60 0] /C [1 1 0] >>
+endobj
+10 0 obj
+<< /Type /Annot /Subtype /Ink /Rect [0 0 70 70] /InkList [[0 0 10 10 20 0] [5 5 5 15]] >>
+endobj
+11 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [0 0 80 20] /T (field1) /FT /Tx /V (hi) >>
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000252 00000 n 
+0000000323 00000 n 
+0000000453 00000 n 
+0000000540 00000 n 
+0000000687 00000 n 
+0000000767 00000 n 
+0000000884 00000 n 
+0000000990 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R >>
+startxref
+1088
+%%EOF

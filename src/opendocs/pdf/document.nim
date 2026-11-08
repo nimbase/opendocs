@@ -5,15 +5,18 @@ import ./types
 import ./lexer
 import ./cos
 import ./docmodel
+import ./catalog
 
 export types
 export cos
+export catalog
 
 type
   PdfDocument* = object
     version*: string
     pages*: seq[PageBox]
     hasEncrypt*: bool
+    info*: PdfInfo
     recovered*: bool ## xref rebuilt by lenient/brute-force recovery
     recoveryNotes*: seq[string] ## what recovery skipped or rebuilt
 
@@ -30,7 +33,7 @@ proc readPdfBytes*(data: string, limits = defaultPdfLimits(),
   let boxes = doc.pageBoxes()
   PdfDocument(version: parsePdfVersion(head), pages: boxes,
     hasEncrypt: doc.crypt.present, recovered: doc.recovered,
-    recoveryNotes: doc.recoveryNotes)
+    recoveryNotes: doc.recoveryNotes, info: doc.docInfo())
 
 proc readPdfBytes*(data: seq[byte],
     limits = defaultPdfLimits(), password = ""): PdfDocument =
@@ -56,7 +59,7 @@ proc openPdf*(path: string, limits = defaultPdfLimits(),
   let boxes = doc.pageBoxes()
   PdfDocument(version: parsePdfVersion(head), pages: boxes,
     hasEncrypt: doc.crypt.present, recovered: doc.recovered,
-    recoveryNotes: doc.recoveryNotes)
+    recoveryNotes: doc.recoveryNotes, info: doc.docInfo())
 
 proc openPdfPassword*(data: string,
     limits = defaultPdfLimits()): bool =

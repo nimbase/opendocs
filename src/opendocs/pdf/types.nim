@@ -16,6 +16,7 @@ type
     maxContentOps*: int ## operators per content stream
     maxImagePixels*: int ## width * height per image
     maxNestedXObject*: int ## Form XObject content-stream recursion depth
+    maxOutlineItems*: int ## outline/struct-tree/name-tree nodes visited
     maxDecodeBytes*: int ## single decoded stream / filter output cap
 
   PageBox* = object
@@ -26,7 +27,8 @@ type
 proc defaultPdfLimits*(): PdfLimits =
   PdfLimits(maxPages: 1000, maxScanBytes: 8192, maxObjects: 200000,
     maxWalkDepth: 32, maxContentOps: 100000, maxImagePixels: 100000000,
-    maxNestedXObject: 12, maxDecodeBytes: 268435456)
+    maxNestedXObject: 12, maxOutlineItems: 100000,
+    maxDecodeBytes: 268435456)
 
 proc checkCount*(limits: PdfLimits, n: int, what: string) =
   if n < 0:

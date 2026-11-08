@@ -1,0 +1,58 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /Metadata 6 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>
+endobj
+4 0 obj
+<<  /Length 0 >>
+stream
+
+endstream
+endobj
+5 0 obj
+<< /Title (Full Title) /Author (Ada Author) /Subject (A Subject) /Keywords (kw1, kw2) /Creator (Tool 1.0) /Producer (Prod) /CreationDate (D:20260304050607+02'00') /ModDate (D:1998) /Trapped /False >>
+endobj
+6 0 obj
+<<  /Length 684 >>
+stream
+<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+   <dc:title><rdf:Alt>
+    <rdf:li xml:lang="x-default">Full Title &amp; More</rdf:li>
+    <rdf:li xml:lang="de">Voller Titel</rdf:li>
+   </rdf:Alt></dc:title>
+   <dc:creator><rdf:Seq>
+    <rdf:li>Ada Author</rdf:li>
+    <rdf:li>Co Author</rdf:li>
+   </rdf:Seq></dc:creator>
+   <xmp:CreateDate>2026-03-04T05:06:07Z</xmp:CreateDate>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000015 00000 n 
+0000000080 00000 n 
+0000000137 00000 n 
+0000000208 00000 n 
+0000000258 00000 n 
+0000000473 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R /Info 5 0 R >>
+startxref
+1209
+%%EOF

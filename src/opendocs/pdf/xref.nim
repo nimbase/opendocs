@@ -28,6 +28,7 @@ type
     entries*: Table[int, XRefEntry]
     root*: CosObj ## /Root reference from the newest trailer
     encrypt*: CosObj ## /Encrypt (coNull when absent)
+    info*: CosObj ## /Info value from the newest trailer (may be a ref)
     idFirst*: string ## first /ID string ("" when absent; never encrypted)
     idSecond*: string ## second /ID string ("" when absent)
     size*: int ## /Size from the newest trailer
@@ -54,8 +55,8 @@ proc finishXRef(entries: Table[int, XRefEntry],
       id.items[1].kind == coStr:
     idSecond = id.items[1].sval
   XRef(entries: entries, root: root,
-    encrypt: trailer.dictGet("Encrypt"), idFirst: idFirst,
-    idSecond: idSecond,
+    encrypt: trailer.dictGet("Encrypt"), info: trailer.dictGet("Info"),
+    idFirst: idFirst, idSecond: idSecond,
     size: if size.kind == coInt: size.ival else: entries.len)
 
 proc parseStartxref*(data: PdfSource, limits: PdfLimits): int =

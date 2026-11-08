@@ -84,6 +84,26 @@ from pdf/sign import DocSignature, SigDraft, docSignatures,
 export DocSignature, SigDraft, docSignatures,
   verifyByteRangeHash, addSignaturePlaceholder
 
+from pdf/catalog import PdfDate, PdfInfo, parsePdfDate, docInfo, xmpField,
+  decodeTextString
+export PdfDate, PdfInfo, parsePdfDate, docInfo, xmpField,
+  decodeTextString
+
+from pdf/names import nameTreePairs, numberTreePairs, pageRefIndex
+export nameTreePairs, numberTreePairs, pageRefIndex
+
+from pdf/outline import PdfOutline, docOutlines, destPageIndex
+export PdfOutline, docOutlines, destPageIndex
+
+from pdf/labels import PdfPageLabel, pageLabels, labelForPage
+export PdfPageLabel, pageLabels, labelForPage
+
+from pdf/annotread import PdfAnnot, readAnnot, pageAnnots, docAnnots
+export PdfAnnot, readAnnot, pageAnnots, docAnnots
+
+from pdf/structread import PdfStructElem, structTree
+export PdfStructElem, structTree
+
 from exports import ExportError, ImageFormat, ExportOptions, ExportPixels,
   encodeImage, saveImage, formatForPath, formatForExt
 export ExportError, ImageFormat, ExportOptions, ExportPixels,
