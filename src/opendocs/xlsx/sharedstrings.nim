@@ -26,6 +26,7 @@ proc sharedStrings*(f: XlsxFile): seq[string] =
       "xl/sharedStrings.xml root is <" & root.tag & ">, want <sst>")
   for si in childElemsL(root, "si"):
     f.sharedStrings.add siText(si)
+    f.sstNodes.add si
   f.sharedStrings
 
 proc sharedString*(f: XlsxFile, idx: int): string =

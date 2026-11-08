@@ -12,14 +12,15 @@
 ## exposes raw values + types; number formatting lands in Phase B.
 
 import std/[strutils, tables, os, tempfiles]
+import openparser/colors
 import openparser/xml
 import opendocs/zip
 
 # Implementation split: model, shared helpers, cell refs, stylesheet,
-# number/date formatting, workbook, shared strings, sheets, and the open
-# flow live in `xlsx/` but are included here, so module `xlsx` keeps one
-# canonical home for every symbol. Order matters: helpers before part
-# readers, open flow last.
+# number/date formatting, workbook, shared strings, sheets, rich text,
+# and the open flow live in `xlsx/` but are included here, so module
+# `xlsx` keeps one canonical home for every symbol. Order matters:
+# helpers before part readers, open flow last.
 include xlsx/types
 include xlsx/base
 include xlsx/cell
@@ -29,4 +30,5 @@ include xlsx/numfmt
 include xlsx/workbook
 include xlsx/sharedstrings
 include xlsx/sheet
+include xlsx/richtext
 include xlsx/reader

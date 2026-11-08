@@ -40,6 +40,7 @@ type
     hasFormula*: bool
     formula*: CellFormula
     inlineText*: string ## resolved `is` text (rich runs concatenated)
+    isNode*: XmlNode ## inline `is` element for lazy rich runs, nil otherwise
 
   XlsxRow* = object
     r*: int ## 1-based row number (positional fallback resolved at parse)
@@ -79,6 +80,33 @@ type
     outlineLevel*: int
     collapsed*: bool
 
+  XlsxFont* = object
+    ## Run font, excelize `Font` parity (`xmlStyles.go:342`) plus the
+    ## `rPr`-only extras excelize drops (`scheme`, integer `family`).
+    ## excelize quirk preserved: the typeface travels in `name` (its
+    ## `Font.Family` carries the `rFont` value, not the integer family).
+    name*: string ## typeface (`rFont`), "" when absent
+    size*: float64 ## 0.0 when absent
+    bold*, italic*, strike*, outline*, shadow*, condense*,
+      extend*: bool
+    underline*: string ## "" absent; bare `<u/>` reads `"single"`
+    vertAlign*: string ## "", "baseline", "superscript", "subscript"
+    scheme*: string ## `rPr` scheme, "" when absent
+    charset*: int
+    hasCharset*: bool
+    family*: int ## `rPr` integer family, valid only when hasFamily
+    hasFamily*: bool
+    color*: Color ## resolved run color (rgb/theme/indexed); invalid
+      ## when no `color` element or when unresolvable (e.g. no theme
+      ## part, like excelize's empty-string result)
+
+  XlsxRichRun* = object
+    ## One rich-text run: text plus its direct formatting. Runs without
+    ## `rPr` report `hasFont == false` (excelize nil-`Font` parity).
+    text*: string
+    hasFont*: bool
+    font*: XlsxFont
+
   XlsxSheet* = object
     name*: string
     sheetId*: int
@@ -97,9 +125,12 @@ type
 
   XlsxStylesheet* = object
     ## `xl/styles.xml` subset needed for value formatting: custom format
-    ## codes (Phase C data, parsed now) and the per-xf number format ids.
+    ## codes (Phase C data, parsed now) and the per-xf number format ids,
+    ## plus the legacy indexed-color palette consulted by rich-text
+    ## color resolution.
     numFmts*: Table[int, string] ## custom numFmtId -> format code
     cellXfs*: seq[int] ## numFmtId per xf (absent attr -> 0)
+    indexedColors*: seq[string] ## custom palette entries (raw `rgb`)
 
 const
   XlsxMaxRows* = 1048576 ## SpreadsheetML row limit
@@ -136,6 +167,9 @@ type
     sheets*: Table[string, XlsxSheet] ## parsed-sheet cache
     sstLoaded*: bool
     sharedStrings*: seq[string]
+    sstNodes*: seq[XmlNode] ## `si` elements, filled with sharedStrings
+    themeLoaded*: bool
+    themeColors*: array[10, string] ## lt1/dk1/lt2/dk2/accent1-6/hlink/folHlink
     date1904*: bool ## workbook date system (Phase B formatting)
     styles*: XlsxStylesheet ## eager stylesheet (missing part -> empty)
 

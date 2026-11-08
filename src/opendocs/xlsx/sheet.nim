@@ -37,7 +37,9 @@ proc parseCell(cNode: XmlNode, posCol, posRow: int): Cell =
     result.formula = CellFormula(content: childText(fNode),
       ftype: optAttr(fNode, "t"), si: si, `ref`: optAttr(fNode, "ref"))
   let isNode = firstChildL(cNode, "is")
-  if isNode != nil: result.inlineText = siText(isNode)
+  if isNode != nil:
+    result.inlineText = siText(isNode)
+    result.isNode = isNode
 
 proc parseMergeBounds(refStr, part: string): tuple[firstCol, firstRow,
     lastCol, lastRow: int] =

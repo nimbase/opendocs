@@ -28,6 +28,12 @@ proc loadStyles*(f: XlsxFile) =
   if xfs != nil:
     for x in childElemsL(xfs, "xf"):
       f.styles.cellXfs.add intAttr(x, "numFmtId", 0)
+  let colors = firstChildL(root, "colors")
+  if colors != nil:
+    let indexed = firstChildL(colors, "indexedColors")
+    if indexed != nil:
+      for rc in childElemsL(indexed, "rgbColor"):
+        f.styles.indexedColors.add optAttr(rc, "rgb")
 
 proc numFmtIdFor*(st: XlsxStylesheet, styleIdx: int): int =
   ## Number-format id for a cell style index, or -1 for the raw-value
