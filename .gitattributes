@@ -1,0 +1,10 @@
+# Binary fixtures: byte offsets matter (PDF xref tables, font tables,
+# zip directories). Without this, Windows checkouts
+# (core.autocrlf=true) convert LF to CRLF in files git classifies as
+# text (no NUL byte in the first 8k, e.g. the small encrypted-PDF
+# fixtures), shifting every offset and breaking parsing.
+tests/data/pdf/*.pdf binary
+tests/data/fonts/*.ttf binary
+tests/data/fonts/*.otf binary
+tests/fixtures/**/*.docx binary
+tests/fixtures/**/*.xlsx binary
