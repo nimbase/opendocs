@@ -29,6 +29,7 @@ include xlsx/numfmttok
 include xlsx/locale_data
 include xlsx/locale
 include xlsx/numfmt
+include xlsx/formulatok
 include xlsx/workbook
 include xlsx/sharedstrings
 include xlsx/sheet

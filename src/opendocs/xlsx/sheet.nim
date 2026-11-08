@@ -551,13 +551,38 @@ proc getCellStyle*(f: XlsxFile, sheet, cellRef: string): XlsxStyle =
     return XlsxStyle()
   getStyle(f, idx)
 
+proc sharedAnchor(s: XlsxSheet, si: int): tuple[found: bool, cell: Cell] =
+  ## Anchor cell of a shared-formula group: the `t="shared"` cell with
+  ## matching `si` and a non-empty `ref` (excelize `getSharedFormula`
+  ## scan order: row-major, first match wins).
+  for r in s.rows:
+    for c in r.cells:
+      if c.hasFormula and c.formula.ftype == "shared" and
+          c.formula.si == si and c.formula.`ref` != "":
+        return (true, c)
+  (false, Cell())
+
 proc getCellFormula*(f: XlsxFile, sheet, cellRef: string): string =
   ## Formula text ("", when the cell has none). Merge-covered cells return
-  ## their anchor formula.
+  ## their anchor formula. Shared-formula cells (`t="shared"`) return the
+  ## anchor formula translated by the anchor-to-cell delta — including
+  ## the anchor itself, which re-renders through the tokenizer (so
+  ## quote-dropping and other tokenizer quirks apply there too, matching
+  ## excelize). Dangling `si` values without an anchor read "".
   let (col, row) = splitCellRef(cellRef)
   let s = getSheet(f, sheet)
   let (covered, anchor) = mergedCell(s, col, row)
+  var c: Cell
+  var found = false
   if covered:
-    return if anchor.hasFormula: anchor.formula.content else: ""
-  let (found, c) = findCell(s, col, row)
-  if not found or not c.hasFormula: "" else: c.formula.content
+    c = anchor
+    found = true
+  else:
+    (found, c) = findCell(s, col, row)
+  if not found or not c.hasFormula: return ""
+  if c.formula.ftype == "shared":
+    let (hasAnchor, a) = sharedAnchor(s, c.formula.si)
+    if not hasAnchor: return ""
+    return expandSharedFormula(a.formula.content, a.col, a.row, c.col,
+      c.row)
+  c.formula.content
