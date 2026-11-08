@@ -140,24 +140,30 @@ suite "interop with system zip/unzip":
       skip() # no usable system zip/unzip on this runner (e.g. Windows CI)
     let dir = createTempDir("opendocs_", "_interop")
     defer: removeDir(dir)
-    var w = newZipWriter()
-    w.addFile("[Content_Types].xml", "<Types/>", zmStored)
-    w.addFile("word/document.xml",
-      "<w:document><w:body><w:p>hi</w:p></w:body></w:document>")
-    let ours = dir / "ours.zip"
-    w.writeZip(ours)
-    let (tOut, tCode) = execCmdEx("unzip -t " & quoteShell(ours))
-    check tCode == 0
-    check "No errors detected" in tOut
-    # other direction: system zip -> our reader
-    let sysDir = dir / "sys"
-    createDir(sysDir / "word")
-    writeFile(sysDir / "[Content_Types].xml", "<Types/>")
-    writeFile(sysDir / "word" / "document.xml", "<doc/>")
-    let sysZip = dir / "sys.zip"
-    let (_, zCode) = execCmdEx("zip -qr " & quoteShell(sysZip) & " .",
-      workingDir = sysDir)
-    check zCode == 0
-    let a = openZip(sysZip)
-    check fromBytes(a.readEntry("[Content_Types].xml")) == "<Types/>"
-    check fromBytes(a.readEntry("word/document.xml")) == "<doc/>"
+    try:
+      var w = newZipWriter()
+      w.addFile("[Content_Types].xml", "<Types/>", zmStored)
+      w.addFile("word/document.xml",
+        "<w:document><w:body><w:p>hi</w:p></w:body></w:document>")
+      let ours = dir / "ours.zip"
+      w.writeZip(ours)
+      let (tOut, tCode) = execCmdEx("unzip -t " & quoteShell(ours))
+      check tCode == 0
+      check "No errors detected" in tOut
+      # other direction: system zip -> our reader
+      let sysDir = dir / "sys"
+      createDir(sysDir / "word")
+      writeFile(sysDir / "[Content_Types].xml", "<Types/>")
+      writeFile(sysDir / "word" / "document.xml", "<doc/>")
+      let sysZip = dir / "sys.zip"
+      let (_, zCode) = execCmdEx("zip -qr " & quoteShell(sysZip) & " .",
+        workingDir = sysDir)
+      check zCode == 0
+      let a = openZip(sysZip)
+      check fromBytes(a.readEntry("[Content_Types].xml")) == "<Types/>"
+      check fromBytes(a.readEntry("word/document.xml")) == "<doc/>"
+    except OSError:
+      # The tools probe passed but the runner still cannot spawn the
+      # command (seen on Windows CI: CreateProcess fails despite
+      # findExe resolving `zip`). Skip instead of failing.
+      skip()
