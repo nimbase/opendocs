@@ -324,13 +324,23 @@ suite "phase B formatting":
     check f.getCellValue("S", "G1") == "#DIV/0!"
     check f.getCellValue("S", "H1") == "calc"
 
-  test "custom codes fall back to raw until Phase C":
+  test "custom codes render through the shared renderer":
     let pkg = styledPkg(
       """<row r="1"><c r="A1" s="3"><v>1.5</v></c></row>""",
       builtinStyles)
     let f = openXlsxBytes(pkg)
     defer: f.closeXlsx()
-    check f.getCellValue("S", "A1") == "1.5"
+    check f.getCellValue("S", "A1") == "1.500"
+    check f.formatApplied("S", "A1")
+    let (found, c) = f.getSheet("S").findCell(1, 1)
+    check found
+    # Same effective-type mapping as the display path (unset → number).
+    let info = f.formatInfo(c.raw, ctyNumber, c.styleIdx)
+    check info.applied
+    check info.numFmtId == 164
+    check info.code == "0.000"
+    check not info.builtin
+    check info.text == "1.500"
 
   test "missing styles and out-of-range S read raw without error":
     let noStyles = packXlsx([

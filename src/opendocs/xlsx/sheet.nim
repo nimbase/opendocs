@@ -507,6 +507,31 @@ proc getCellType*(f: XlsxFile, sheet, cellRef: string): CellType =
   let (found, c) = findCell(s, col, row)
   if not found: ctyUnset else: c.cellType
 
+proc formatApplied*(f: XlsxFile, sheet, cellRef: string): bool =
+  ## Whether the cell's value went through a number format (builtin or
+  ## custom). Raw mode and unstyled cells report false.
+  if f.opts.rawCellValue: return false
+  let (col, row) = splitCellRef(cellRef)
+  let s = getSheet(f, sheet)
+  let (covered, anchor) = mergedCell(s, col, row)
+  var c: Cell
+  var found = false
+  if covered:
+    c = anchor
+    found = true
+  else:
+    (found, c) = findCell(s, col, row)
+  if not found or c.styleIdx <= 0: return false
+  # Same dispatch as `cellDisplayValue`: text and error cells never
+  # format; unset cells resolve as numbers.
+  case c.cellType
+  of ctySharedString, ctyInlineString, ctyError, ctyFormula: return false
+  of ctyUnset:
+    return formatInfo(f, generalTrim(c.raw), ctyNumber,
+      c.styleIdx).applied
+  else:
+    return formatInfo(f, c.raw, c.cellType, c.styleIdx).applied
+
 proc getCellFormula*(f: XlsxFile, sheet, cellRef: string): string =
   ## Formula text ("", when the cell has none). Merge-covered cells return
   ## their anchor formula.

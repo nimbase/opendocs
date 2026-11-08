@@ -132,6 +132,15 @@ type
     cellXfs*: seq[int] ## numFmtId per xf (absent attr -> 0)
     indexedColors*: seq[string] ## custom palette entries (raw `rgb`)
 
+  XlsxFormatInfo* = object
+    ## What `formattedCellValue` decided (P7): whether a number format
+    ## applied, which one, and the rendered text when it did.
+    applied*: bool
+    numFmtId*: int
+    code*: string ## builtin code or custom format code
+    builtin*: bool
+    text*: string ## rendered value when applied, raw value otherwise
+
 const
   XlsxMaxRows* = 1048576 ## SpreadsheetML row limit
   XlsxMaxCols* = 16384 ## SpreadsheetML column limit (XFD)

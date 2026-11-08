@@ -413,7 +413,7 @@ proc parseNumFmt*(code: string): NumFmtAst =
             p.pendingEscaped, p.pendingMarker, oldParts)
           resetPending(p)
           p.pendingKind = "Literal"
-        if rns != "":
+        if rs != rns:
           if p.pendingKind == "":
             p.pendingKind = "Literal"
           emitToken(p, p.pendingKind, rs, p.inString, false, "", oldParts)

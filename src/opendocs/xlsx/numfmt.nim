@@ -378,12 +378,17 @@ func commafyInt(s: string): string =
     res &= ch
   if neg: "-" & res else: res
 
+func roundHalfAway(x: float): float =
+  ## Excel/Go `math.Round` parity: halves round away from zero.
+  ## Nim's `round` is banker's (2.5 -> 2); formats need 2.5 -> 3.
+  if x >= 0.0: floor(x + 0.5) else: -floor(-x + 0.5)
+
 func renderFixed(absVal: float, decimals: int, thousands: bool): string =
   ## Fixed-point rendering on the float (excelize `numberHandler`
   ## `Sprintf` path): half-away rounding at `decimals`, optional
   ## thousands separators.
   let ratio = pow10f(decimals)
-  let num = round(absVal * ratio) / ratio
+  let num = roundHalfAway(absVal * ratio) / ratio
   var s = formatFloat(num, ffDecimal, decimals)
   if decimals == 0 and s.endsWith("."): s.setLen(s.len - 1)
   if thousands:
@@ -654,10 +659,11 @@ func dateParts(serial: float, date1904: bool,
     t.h, t.mi, t.s, msDigit, ap, int(floor(daysF * 24.0)),
     int(floor(daysF * 1440.0)), int(floor(daysF * 86400.0)), weekday))
 
-proc renderDateCode(code: string, serial: float,
+func renderDateToks(toks: seq[DateTok], serial: float,
     date1904: bool): tuple[ok: bool, text: string] =
-  ## Render a builtin date/time code. `ok=false` selects raw fallback.
-  let toks = tokenizeDateCode(code)
+  ## Date renderer core over prebuilt tokens. Builtin codes arrive via
+  ## `tokenizeDateCode`; custom codes map nfp tokens onto `DateTok`
+  ## first, so both paths share this walk.
   var wantMs = false
   var hasAp = false
   for t in toks:
@@ -708,6 +714,11 @@ proc renderDateCode(code: string, serial: float,
     of dtkElapsedS: res &= $dp.elS
     of dtkLit: res &= t.text
   (true, res)
+
+proc renderDateCode(code: string, serial: float,
+    date1904: bool): tuple[ok: bool, text: string] =
+  ## Render a builtin date/time code. `ok=false` selects raw fallback.
+  renderDateToks(tokenizeDateCode(code), serial, date1904)
 
 # ------------------------------------------------- sections + accounting
 
@@ -882,12 +893,535 @@ proc formatBuiltin(value: string, numFmtId: int, cellType: CellType,
   if f < 0.0: s = "-" & s
   (true, s)
 
+# ------------------------------------------------------- custom formats
+
+const customNumberTokenKinds = ["Denominator", "DigitalPlaceHolder",
+  "Exponential", "Fraction", "HashPlaceHolder", "Percent",
+  "ZeroPlaceHolder"]
+const customDateTokenKinds = ["DateTimes", "ElapsedDateTimes"]
+const customSupportedTokenKinds = ["Alignment", "CurrencyLanguage",
+  "Color", "DateTimes", "DecimalPoint", "Denominator",
+  "DigitalPlaceHolder", "ElapsedDateTimes", "Exponential", "Fraction",
+  "HashPlaceHolder", "Literal", "Percent", "RepeatsChar",
+  "SwitchArgument", "TextPlaceHolder", "ThousandsSeparator",
+  "ZeroPlaceHolder"]
+
+type CustomFmt = object
+  value: string
+  number: float
+  isNumeric: bool
+  sections: seq[NumFmtSection]
+  sectionIdx: int
+  sectionType: string
+  usePositive: bool
+  date1904: bool
+  intHolder, intPadding, fracHolder, fracPadding: int
+  usePointer, useCommaSep, useFraction, useScientificNotation: bool
+  useMillisecond: bool
+  percent: int
+  scalingFactor, scalingStart, expBaseLen: int
+  switchArgument, currencyString: string
+
+proc customSectionType(value: string, cellType: CellType,
+    sections: seq[NumFmtSection]): tuple[num: float, isNum: bool,
+    typ: string, usePositive: bool] =
+  ## Port of excelize `getValueSectionType`: non-numeric cells and
+  ## values take the Text section; otherwise sign selects Positive,
+  ## falling back to Positive (with a leading `-`) when no Negative
+  ## section exists. Conditions are parsed but ignored for selection,
+  ## matching excelize.
+  if cellType != ctyNumber and cellType != ctyDate:
+    return (0.0, false, "Text", false)
+  let (isNum, _, num) = isNumericV(value)
+  if not isNum: return (0.0, false, "Text", false)
+  if num >= 0.0: return (num, true, "Positive", false)
+  for s in sections:
+    if s.kind == "Negative": return (num, true, "Negative", false)
+  (num, true, "Positive", true)
+
+proc alignCustom(items: seq[NumFmtToken], s: string): string =
+  ## Port of excelize `alignmentHandler`: a leading/trailing alignment
+  ## token pads one space.
+  result = s
+  if items.len == 0: return
+  if items[0].kind == "Alignment": result = " " & result
+  if items[^1].kind == "Alignment": result &= " "
+
+proc handleDigitsLiteral(text: string, tokenLen, intPartLen,
+    hashZeroLen: int, fill: bool): tuple[digits: int, s: string] =
+  ## Port of excelize `handleDigitsLiteral`: consume `tokenLen` chars
+  ## from `text` at the running offset, space-filling missing digits
+  ## only for `?` placeholders.
+  var l = tokenLen
+  var ipLen = intPartLen
+  if ipLen == 0 and text.len > hashZeroLen:
+    l = text.len + tokenLen - hashZeroLen
+  if text.len < hashZeroLen:
+    ipLen += text.len - hashZeroLen
+  var res = ""
+  for i in 0 ..< l:
+    let j = i + ipLen
+    if j >= 0 and j < text.len: res &= text[j]
+    elif fill: res &= " "
+  (l, res)
+
+proc confCustom(cf: var CustomFmt) =
+  ## Port of excelize `getNumberFmtConf` + `applyNumberFmtToken`.
+  let items = cf.sections[cf.sectionIdx].items
+  var lastDigitIdx = -1
+  for i, t in items:
+    if t.kind == "ZeroPlaceHolder" or t.kind == "HashPlaceHolder":
+      lastDigitIdx = i
+  for i, t in items:
+    case t.kind
+    of "HashPlaceHolder":
+      if cf.usePointer: cf.fracHolder += t.text.len
+      else: cf.intHolder += t.text.len
+    of "Exponential": cf.useScientificNotation = true
+    of "ThousandsSeparator":
+      if i > lastDigitIdx:
+        if cf.scalingFactor == 0: cf.scalingStart = i
+        inc cf.scalingFactor
+      else: cf.useCommaSep = true
+    of "Literal":
+      if t.text == "," and i > lastDigitIdx and cf.scalingFactor > 0:
+        inc cf.scalingFactor
+    of "Percent": cf.percent += t.text.len
+    of "DecimalPoint": cf.usePointer = true
+    of "Fraction": cf.useFraction = true
+    of "SwitchArgument": cf.switchArgument = t.text
+    of "ZeroPlaceHolder":
+      cf.intHolder = 0
+      if cf.usePointer:
+        if cf.useScientificNotation: cf.expBaseLen += t.text.len
+        else: cf.fracPadding += t.text.len
+      else: cf.intPadding += t.text.len
+    else: discard
+
+proc numberPartLenCustom(cf: var CustomFmt): tuple[intLen,
+    fracLen: int] =
+  ## Port of excelize `getNumberPartLen`.
+  let parts = goFminus1(abs(cf.number)).split('.')
+  let intPart = parts[0].len
+  let fracPart = if parts.len == 2: parts[1].len else: 0
+  if cf.intHolder > intPart: cf.intHolder = intPart
+  result = (intPart, fracPart)
+  if cf.intPadding + cf.intHolder > intPart:
+    result[0] = cf.intPadding + cf.intHolder
+  if fracPart > cf.fracHolder + cf.fracPadding:
+    result[1] = cf.fracHolder + cf.fracPadding
+  if cf.fracPadding > fracPart:
+    result[1] = cf.fracPadding
+
+proc printBigCustom(cf: CustomFmt, decimal: float,
+    fracLen: int): string =
+  ## Port of excelize `printBigNumber` (single trailing `%`, like the
+  ## reference, even for repeated percent tokens).
+  var v = abs(decimal)
+  if cf.percent > 0: v *= 100.0
+  var res = goFminus1(v)
+  if cf.useCommaSep:
+    let di = res.find('.')
+    if di < 0: res = commafyInt(res)
+    else: res = commafyInt(res[0 ..< di]) & res[di .. ^1]
+  if fracLen > 0:
+    let di = res.find('.')
+    if di >= 0:
+      let have = res.len - di - 1
+      if have < fracLen: res &= repeat('0', fracLen - have)
+      elif have > fracLen: res = res[0 ..< di + 1 + fracLen]
+    else:
+      res &= "." & repeat('0', fracLen)
+  if cf.percent > 0: res &= "%"
+  res
+
+proc fractionCustom(frac: float, t: NumFmtToken,
+    numeratorPlaceHolder: int): string =
+  ## Port of excelize `fractionHandler` for one token.
+  if t.kind == "DigitalPlaceHolder":
+    let (num, den) = continuedFraction(frac,
+      pow10f(t.text.len).int64)
+    if num == 0:
+      return repeat(' ', numeratorPlaceHolder + t.text.len + 1)
+    let ns = $num
+    let ds = $den
+    return repeat(' ', max(numeratorPlaceHolder - ns.len, 0)) & ns &
+      "/" & ds & repeat(' ', max(t.text.len - ds.len, 0))
+  if t.kind == "Denominator":
+    let den =
+      try: parseFloat(t.text)
+      except ValueError: return "0/0"
+    return $int(roundHalfAway(frac * den)) & "/" &
+      $int(roundHalfAway(den))
+  ""
+
+proc printNumberLiteralCustom(cf: CustomFmt, text: string): string =
+  ## Port of excelize `printNumberLiteral`: walk the section tokens,
+  ## emitting literals and consuming the preformatted number through
+  ## digit placeholders.
+  var res = ""
+  if cf.usePositive: res &= "-"
+  let items = cf.sections[cf.sectionIdx].items
+  var lastNonFraction = int.high
+  var appearedFraction = false
+  var numeratorPlaceHolder = 0
+  var intPartLen = 0
+  var hashZeroLen = 0
+  for idx in countdown(items.len - 1, 0):
+    let tk = items[idx]
+    if tk.kind == "Fraction": appearedFraction = true
+    elif appearedFraction and (tk.kind == "HashPlaceHolder" or
+        tk.kind == "DigitalPlaceHolder"):
+      lastNonFraction = idx - 1
+      break
+  for tk in items:
+    if tk.kind == "HashPlaceHolder" or tk.kind == "ZeroPlaceHolder":
+      hashZeroLen += tk.text.len
+    elif tk.kind == "DigitalPlaceHolder" and
+        lastNonFraction < int.high:
+      # counted below only when inside the integer part; see emitter
+      discard
+  # hashZeroLen counts integer-part placeholders only (excelize
+  # accumulates before the fraction split is known; recompute here):
+  hashZeroLen = 0
+  for idx, tk in items:
+    if idx > lastNonFraction: break
+    if tk.kind == "HashPlaceHolder" or tk.kind == "ZeroPlaceHolder":
+      hashZeroLen += tk.text.len
+    elif tk.kind == "DigitalPlaceHolder":
+      hashZeroLen += tk.text.len
+  var useFraction = false
+  var frac = 0.0
+  for idx, tk in items:
+    if tk.kind == "CurrencyLanguage":
+      res &= cf.currencyString
+    if tk.kind == "Literal":
+      if not (cf.scalingFactor > 0 and idx >= cf.scalingStart and
+          tk.text == ","):
+        res &= tk.text
+    if tk.kind == "DigitalPlaceHolder" and idx > lastNonFraction:
+      if not useFraction: numeratorPlaceHolder = tk.text.len
+    elif tk.kind in ["HashPlaceHolder", "ZeroPlaceHolder",
+        "DigitalPlaceHolder"]:
+      let (digits, s) = handleDigitsLiteral(text, tk.text.len,
+        intPartLen, hashZeroLen, tk.kind == "DigitalPlaceHolder")
+      intPartLen += digits
+      res &= s
+    if tk.kind == "Fraction":
+      frac = abs(cf.number) - floor(abs(cf.number))
+      useFraction = true
+    if useFraction:
+      res &= fractionCustom(frac, tk, numeratorPlaceHolder)
+  res
+
+proc numberCustom(cf: var CustomFmt): string =
+  ## Port of excelize `numberHandler`.
+  confCustom(cf)
+  if cf.scalingFactor > 0:
+    cf.number /= pow(1000.0, cf.scalingFactor.float)
+  let (intLen, fracLen) = numberPartLenCustom(cf)
+  if intLen + fracLen > 15 and not cf.useScientificNotation:
+    let (isNum, prec, dec) = isNumericV(cf.value)
+    if isNum and prec > 15:
+      return printNumberLiteralCustom(cf, printBigCustom(cf, dec,
+        fracLen))
+  var paddingLen = intLen + fracLen
+  if fracLen > 0: inc paddingLen
+  if cf.useScientificNotation:
+    if cf.expBaseLen != 2: return cf.value
+    var num = cf.number
+    if cf.percent > 0:
+      num *= pow(100.0, cf.percent.float)
+    return printNumberLiteralCustom(cf,
+      renderScientific(abs(num), fracLen))
+  var num = cf.number
+  if cf.percent > 0:
+    num *= pow(100.0, cf.percent.float)
+  if cf.useFraction: num = floor(abs(num))
+  let ratio = pow(10.0, fracLen.float)
+  num = roundHalfAway(num * ratio) / ratio
+  var s = formatFloat(abs(num), ffDecimal, fracLen)
+  if fracLen == 0 and s.endsWith("."):
+    s.setLen(s.len - 1) # Sprintf %f never emits the point
+  while s.len < paddingLen: s = "0" & s
+  if cf.useCommaSep:
+    let di = s.find('.')
+    if di < 0: s = commafyInt(s)
+    else: s = commafyInt(s[0 ..< di]) & s[di .. ^1]
+  if cf.percent > 0: s &= repeat('%', cf.percent)
+  printNumberLiteralCustom(cf, s)
+
+proc isMonthTokenCustom(items: seq[NumFmtToken], i: int): bool =
+  ## Port of excelize `isMonthToken`.
+  var timePrevious = false
+  var secondsNext = false
+  for idx in countdown(i - 1, 0):
+    if items[idx].kind == "DateTimes":
+      timePrevious = items[idx].text.toUpperAscii().contains({'H', 'S'})
+      break
+    if items[idx].kind == "ElapsedDateTimes":
+      timePrevious = true
+      break
+  for idx in i + 1 ..< items.len:
+    if items[idx].kind == "DateTimes":
+      secondsNext = 'S' in items[idx].text.toUpperAscii()
+      break
+  not timePrevious and not secondsNext
+
+proc renderCustomDate(cf: var CustomFmt,
+    date1904: bool): tuple[ok: bool, text: string] =
+  ## Custom date sections over nfp tokens (excelize `dateTimeHandler`
+  ## order). Locale tags accept en-US aliases (`409`, `F800`,
+  ## `x-sysdate`, `1010000`, `F400`, `x-systime`); anything else renders
+  ## raw, like excelize's `ErrUnsupportedNumberFormat` path.
+  let items = cf.sections[cf.sectionIdx].items
+  var localeOk = true
+  for t in items:
+    if t.kind != "CurrencyLanguage": continue
+    var tag = ""
+    for p in t.parts:
+      if p.kind == "LanguageInfo": tag = p.value
+      if p.kind == "CurrencyString": cf.currencyString = p.value
+    if tag == "": continue
+    # en-US aliases (excelize maps F800/x-sysdate/1010000 and
+    # F400/x-systime onto 409 when no long-date opts are set).
+    if tag.toUpperAscii() in ["409", "F800", "X-SYSDATE", "1010000",
+        "F400", "X-SYSTIME"]:
+      continue
+    # Other numeric locale tags render with en-US month/day names and
+    # AM/PM for now; the full locale table is Phase C locale territory.
+    # Non-numeric tags (and anything else) select raw, like excelize's
+    # ErrUnsupportedNumberFormat path.
+    var hexTag = true
+    if tag.len == 0 or tag.len > 8: hexTag = false
+    else:
+      for ch in tag:
+        if ch notin {'0' .. '9', 'a' .. 'f', 'A' .. 'F', '-'}:
+          hexTag = false
+          break
+    if not hexTag: localeOk = false
+  if not localeOk: return (false, cf.value)
+  var wantMs = false
+  for t in items:
+    if t.kind == "ZeroPlaceHolder" and t.text.len > 0:
+      wantMs = true # excelize millisecond scan
+      break
+  let (ok, dp) = dateParts(cf.number, date1904, wantMs)
+  if not ok: return (false, "")
+  var res = cf.currencyString
+  var ap = ""
+  for i, t in items:
+    if t.kind == "Literal":
+      res &= t.text
+      continue
+    if t.kind == "DecimalPoint":
+      res &= "."
+      continue
+    if t.kind == "ZeroPlaceHolder":
+      var w = t.text.len
+      if w > 3: w = 3
+      let ms = if dp.msDigit == "": "000" else: dp.msDigit
+      res &= align(ms, 3, '0')[0 ..< min(w, 3)]
+      continue
+    if t.kind == "SwitchArgument":
+      continue # DBNum etc: locale table territory, marker dropped
+    if t.kind == "ElapsedDateTimes":
+      let up = t.text.toUpperAscii()
+      if 'H' in up: res &= $dp.elH
+      elif 'M' in up: res &= $dp.elM
+      elif 'S' in up: res &= $dp.elS
+      continue
+    if t.kind != "DateTimes": continue
+    let up = t.text.toUpperAscii()
+    if up in ["AM/PM", "A/P", "上午/下午"]:
+      if ap == "":
+        var nextH = -1
+        for j in i + 1 ..< items.len:
+          if items[j].kind == "DateTimes" and
+              'H' in items[j].text.toUpperAscii():
+            nextH = j
+            break
+        let parts = t.text.split('/')
+        ap = parts[0]
+        if nextH >= 0:
+          let (hok, hdp) = dateParts(cf.number, false, wantMs)
+          if hok and hdp.h >= 12 and parts.len > 1: ap = parts[1]
+      res &= ap
+      continue
+    if 'M' in up:
+      let l = t.text.len
+      if l == 1 or l == 2:
+        if isMonthTokenCustom(items, i):
+          res &= (if l == 1: $dp.moNum else: align($dp.moNum, 2, '0'))
+        else:
+          res &= (if l == 1: $dp.mi else: align($dp.mi, 2, '0'))
+        continue
+      if l == 3:
+        res &= monthAbbr[dp.moNum - 1]
+        continue
+      if l == 4 or l > 5:
+        res &= monthFull[dp.moNum - 1]
+        continue
+      res &= monthAbbr[dp.moNum - 1][0 .. 0]
+      continue
+    if 'Y' in up:
+      if t.text.len <= 2: res &= align($(dp.yr mod 100), 2, '0')
+      else: res &= $dp.yr
+      continue
+    if 'E' in up:
+      res &= $dp.yr
+      continue
+    if 'A' in up:
+      # Mirrors excelize daysHandler's "A" branch (weekday-only tokens).
+      res &= (if t.text.len == 3: weekdayAbbr[dp.weekday]
+        else: weekdayFull[dp.weekday])
+      continue
+    if 'D' in up:
+      if t.text.len == 1: res &= $dp.d
+      elif t.text.len == 2: res &= align($dp.d, 2, '0')
+      elif t.text.len == 3: res &= weekdayAbbr[dp.weekday]
+      else: res &= weekdayFull[dp.weekday]
+      continue
+    if 'H' in up:
+      var h = dp.h
+      var j = i + 1
+      var apLate = ""
+      while j < items.len:
+        if items[j].kind == "DateTimes":
+          if 'H' in items[j].text.toUpperAscii(): break
+          if items[j].text.toUpperAscii() in ["AM/PM", "A/P"]:
+            apLate = items[j].text
+            break
+        inc j
+      if apLate != "":
+        let parts = apLate.split('/')
+        ap = parts[0]
+        if h >= 12 and parts.len > 1: ap = parts[1]
+        if h > 12: h -= 12
+      if ap != "":
+        var k = i + 1
+        var laterH = false
+        while k < items.len:
+          if items[k].kind == "DateTimes" and
+              'H' in items[k].text.toUpperAscii():
+            laterH = true
+            break
+          inc k
+        if not laterH and h > 12: h -= 12
+        if h == 0: h = 12
+      res &= (if t.text.len == 1: $h else: align($h, 2, '0'))
+      continue
+    if 'S' in up:
+      # excelize secondsHandler renders for any S token length
+      res &= (if t.text.len == 1: $dp.s else: align($dp.s, 2, '0'))
+      continue
+  (true, res)
+
+proc textCustom(cf: CustomFmt): tuple[ok: bool, text: string] =
+  ## Port of excelize `textHandler`: literals plus value substitution.
+  var res = ""
+  for t in cf.sections[cf.sectionIdx].items:
+    if t.kind == "Literal": res &= t.text
+    if t.kind == "TextPlaceHolder" or t.kind == "ZeroPlaceHolder":
+      res &= cf.value
+  (true, res)
+
+proc positiveCustom(cf: var CustomFmt): tuple[ok: bool, text: string] =
+  ## Port of excelize `positiveHandler`. Bails return raw with ok=false.
+  for t in cf.sections[cf.sectionIdx].items:
+    if t.kind == "General":
+      let (isNum, prec, num) = isNumericV(cf.value)
+      if isNum and prec > 11: return (true, goG(num, 10))
+      return (false, cf.value)
+  var fmtNum = false
+  var i = 0
+  let items = cf.sections[cf.sectionIdx].items
+  while i < items.len:
+    let t = items[i]
+    if t.kind in customNumberTokenKinds: fmtNum = true
+    if t.kind in customDateTokenKinds:
+      if fmtNum or cf.number < 0.0: return (false, cf.value)
+      var useDateTimeTokens = false
+      for u in items:
+        if u.kind in customDateTokenKinds:
+          if useDateTimeTokens and cf.useMillisecond:
+            return (false, cf.value)
+          useDateTimeTokens = true
+          continue
+        if u.kind in customNumberTokenKinds:
+          if u.kind == "ZeroPlaceHolder":
+            cf.useMillisecond = true
+            continue
+          return (false, cf.value)
+      return renderCustomDate(cf, cf.date1904)
+    inc i
+  (true, numberCustom(cf))
+
+proc negativeCustom(cf: var CustomFmt): tuple[ok: bool, text: string] =
+  ## Port of excelize `negativeHandler`: any unsupported or General
+  ## token, or any date token, selects the raw value (ok=false).
+  for t in cf.sections[cf.sectionIdx].items:
+    if t.kind notin customSupportedTokenKinds or t.kind == "General":
+      return (false, cf.value)
+    if t.kind in customDateTokenKinds: return (false, cf.value)
+  (true, numberCustom(cf))
+
+proc renderCustom(value, code: string, cellType: CellType,
+    date1904: bool): tuple[ok: bool, text: string] =
+  ## Custom format-code rendering (excelize `format` order): section by
+  ## sign (or Text), then the section-type handler, then alignment.
+  let ast = parseNumFmt(code)
+  if not ast.ok: return (false, value)
+  var cf = CustomFmt(value: value, sections: ast.sections,
+    date1904: date1904)
+  let (num, isNum, typ, usePos) = customSectionType(value, cellType,
+    ast.sections)
+  cf.number = num
+  cf.isNumeric = isNum
+  cf.sectionType = typ
+  cf.usePositive = usePos
+  for i, s in ast.sections:
+    if s.kind != typ: continue
+    cf.sectionIdx = i
+    if isNum:
+      if typ == "Positive":
+        let (ok, text) = positiveCustom(cf)
+        if not ok: return (false, value)
+        return (true, alignCustom(s.items, text))
+      let (ok, text) = negativeCustom(cf)
+      if not ok: return (false, value)
+      return (true, alignCustom(s.items, text))
+    let (ok, text) = textCustom(cf)
+    if not ok: return (false, value)
+    return (true, alignCustom(s.items, text))
+  (false, value)
+
+
+proc formatInfo*(f: XlsxFile, rawV: string, effType: CellType,
+    styleIdx: int): XlsxFormatInfo =
+  ## What `formattedCellValue` decided, made visible (P7): whether a
+  ## format applied, and which one. Builtin and custom codes both flow
+  ## through here; `text` carries the rendered value when applied.
+  let id = numFmtIdFor(f.styles, styleIdx)
+  if id < 0:
+    return XlsxFormatInfo(applied: false, numFmtId: -1, code: "",
+      builtin: false, text: rawV)
+  if f.styles.numFmts.hasKey(id):
+    let code = f.styles.numFmts[id]
+    let (ok, text) = renderCustom(rawV, code, effType, f.date1904)
+    return XlsxFormatInfo(applied: ok, numFmtId: id, code: code,
+      builtin: false, text: if ok: text else: rawV)
+  let code = builtinFmtCode(id)
+  if code == "":
+    return XlsxFormatInfo(applied: false, numFmtId: id, code: "",
+      builtin: true, text: rawV)
+  let (ok, text) = formatBuiltin(rawV, id, effType, f.date1904)
+  XlsxFormatInfo(applied: ok, numFmtId: id, code: code, builtin: true,
+    text: if ok: text else: rawV)
+
 proc formattedCellValue*(f: XlsxFile, rawV: string, effType: CellType,
     styleIdx: int): string =
   ## Port of excelize `formattedValue`: raw when unstyled, unresolvable,
-  ## custom (Phase C), or unrenderable; otherwise the builtin rendering.
-  let id = numFmtIdFor(f.styles, styleIdx)
-  if id < 0: return rawV
-  if f.styles.numFmts.hasKey(id): return rawV # custom: Phase C
-  let (ok, text) = formatBuiltin(rawV, id, effType, f.date1904)
-  if ok: text else: rawV
+  ## or unrenderable; otherwise the builtin or custom rendering.
+  let info = formatInfo(f, rawV, effType, styleIdx)
+  if info.applied: info.text else: rawV
