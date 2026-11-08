@@ -96,9 +96,9 @@ test "q restores ctm":
     "5 0 0 5 0 0 cm q 2 0 0 2 0 0 cm Q"))
   check close(gs.ctm, [5.0, 0.0, 0.0, 5.0, 0.0, 0.0])
 
-test "unbalanced Q raises":
-  expect(PdfError):
-    discard walkOps(parseContentStream("Q"))
+test "unbalanced Q is ignored (M13 stray-Q tolerance)":
+  let gs = walkOps(parseContentStream("Q"))
+  check close(gs.ctm, identityMatrix())
 
 test "text matrices thread through Td and Tstar":
   let gs = walkOps(parseContentStream(

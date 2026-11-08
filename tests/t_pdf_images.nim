@@ -102,17 +102,17 @@ test "lab image names the gap":
   except PdfError as e:
     check "Lab" in e.msg
 
-test "ccitt names the gap":
+test "jbig2 names the gap":
   let data = imagePdf("<< /Type /XObject /Subtype /Image /Width 2 " &
     "/Height 2 /ColorSpace /DeviceGray /BitsPerComponent 1 " &
-    "/Filter /CCITTFaxDecode /Length 4 >>\nstream\nxxxx\nendstream",
+    "/Filter /JBIG2Decode /Length 4 >>\nstream\nxxxx\nendstream",
     "ImC")
   var d = openDoc(data)
   try:
     discard d.pageImages(0)
     fail()
   except PdfError as e:
-    check "CCITTFaxDecode" in e.msg
+    check "JBIG2Decode" in e.msg
 
 test "missing xobject fails":
   let data = assemblePdf(@[
