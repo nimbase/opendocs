@@ -14,8 +14,8 @@ clue install opendocs
 
 Dependencies (from `opendocs.nimble`):
 
-- `archive >= 0.1.0` — used by `zip.nim` for flate/crc32/io
-- `image >= 0.1.0` — used by `exports.nim` and PDF image pipeline
+- `archive >= 0.1.0` ([nimbase/archive](https://github.com/nimbase/archive)) — used by `zip.nim` for flate/crc32/io
+- `image >= 0.1.0` ([nimbase/image](https://github.com/nimbase/image)) — used by `exports.nim` and PDF image pipeline
 - `openparser >= 0.3.4` — XML parsing for XLSX/DOCX, colors, tempfiles
 - `nimcypher >= 0.2.4` — PDF encryption (RC4/AES)
 - `https://github.com/nimbase/harfnim` — text shaping, measuring, subsetting TTF/OpenType

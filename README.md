@@ -15,10 +15,10 @@
 ## Features
 - Read & Write DOCX and PDFs programatically
 - Encrypt & Decrypt using [nimcypher](https://github.com/nimbase/nimcypher)
-- Built-in compressor and decompressor via [zlib](https://github.com/status-im/nim-zlib)
+- Built-in compressor and decompressor via [archive](https://github.com/nimbase/archive)
 - Text shaping & Font embedding via [harfnim](https://github.com/nimbase/harfnim) (pure Nim)<br>
   _shaping, measuring, wrapping & subsetting TTF/OpenType, incl. CJK & emoji_
-- High-performance image handling via [libvips](https://github.com/openpeeps/libvips-nim) (TO BE MOVED AT NIMBASE)<br>
+- High-performance image handling via [image](https://github.com/nimbase/image)<br>
   _decode, resize & recompress JPEG/PNG with alpha for embedding & extraction_
 - DOCX Reader and Writer
   - Paragraphs, runs, text formatting, borders, tabs, and breaks
@@ -113,7 +113,7 @@ var d = openDoc(readFile("tests/data/pdf/m3b_text.pdf"))
 for run in d.extractText(0):
   echo "\"", run.text, "\" at (", run.x, ", ", run.y, ")"
 
-# Embedded images decode through libvips (JPEG, JPX, masks, CMYK).
+# Embedded images decode through image pkg (JPEG, JPX, masks, CMYK).
 var imgs = openDoc(readFile("tests/data/pdf/m5_images.pdf"))
 for im in imgs.pageImages(0):
   echo im.name, ": ", im.width, "x", im.height, " ", im.encoding
@@ -142,7 +142,7 @@ doc.paragraph("Wrapped on shaped widths, auto page breaks.")
 doc.textAt("absolute at x, y", 72.0, 72.0)
 
 # JPEG embeds byte-for-byte; anything else embeds lossless.
-# With compress the pixels run through libvips (optional downscale
+# With compress the pixels run through image pkg (optional downscale
 # to maxWidthPx, alpha over white) and re-encode at jpegQuality.
 doc.imageFromFile("photo.jpg")
 doc.imageFromFile("photo.jpg", ImageOpts(compress: true,

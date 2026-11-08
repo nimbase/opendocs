@@ -22,7 +22,7 @@ doc.close()
 - `PageSize(psA5/psA4/psA3/psLetter/psLegal/psCustom)`, `ImageOpts(compress, jpegQuality, maxWidthPx, widthPt)`.
 - `Pdf(builder, pages, curContent, curImages, pageW/H, margin, cursorY, fonts, fontOrder, curFont/Size, title/author, nextImage)`.
 - `pageDims`, `newPdf(fontPath|builtin|fontBytes+baseName; size, customW/H, margin)`, `loadFont(name, path)`, `setFont(name, size)`, `fontNames`, `setPageSize`, `setMargin`, `setTitle/setAuthor`, `newPage`, `pageCount(Pdf)`, `paragraph`, `heading(text, size)`, `textAt(text, x, y, size)`.
-- `imageFromFile(path, opts)` — JPEG embeds byte-for-byte; anything else embeds lossless. With `compress` pixels go through libvips (optional downscale to `maxWidthPx`, alpha over white) and re-encode at `jpegQuality`. CMYK/YCCK guarded.
+- `imageFromFile(path, opts)` — JPEG embeds byte-for-byte; anything else embeds lossless. With `compress` pixels go through `image` package (optional downscale to `maxWidthPx`, alpha over white) and re-encode at `jpegQuality`. CMYK/YCCK guarded.
 - `build(): string`, `save(path)`, `close` (releases harfnim).
 
 ## Low-level (`PdfBuilder`)
