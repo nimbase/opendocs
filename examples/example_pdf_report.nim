@@ -23,7 +23,7 @@ if fileExists(DejaVuPath):
 
 doc.heading("Quarterly report")
 doc.paragraph("This report flows across pages on its own. Each " &
-  "paragraph wraps on HarfBuzz shaped widths and the writer embeds " &
+  "paragraph wraps on shaped widths and the writer embeds " &
   "only the glyphs that were actually drawn.")
 
 if fileExists(DejaVuPath):

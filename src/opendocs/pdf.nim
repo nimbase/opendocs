@@ -9,7 +9,7 @@
 ## The writer is a small document model on top of the low-level
 ## builder: one font setup, flowing paragraphs with automatic page
 ## breaks, file-path images with an optional JPEG compress pass.
-## All text shaping and embedding goes through HarfBuzz (`CidFontUse`):
+## All text shaping and embedding goes through harfnim (`CidFontUse`):
 ## supply a TrueType/OpenType program, get full Unicode out.
 ##
 ##   var doc = newPdf("DejaVuSans.ttf")
@@ -145,7 +145,7 @@ type
   Pdf* = object
     ## Opaque document handle. Build with `newPdf`, fill with
     ## `paragraph`/`heading`/`textAt`/`imageFromFile`, finish with
-    ## `save` or `build`, release HarfBuzz state with `close`.
+    ## `save` or `build`, release shaping state with `close`.
     builder: PdfBuilder
     pages: seq[LogicalPage]
     curContent: string
@@ -207,7 +207,7 @@ proc addFontBytes(doc: var Pdf, name, fontBytes, baseName: string) =
 proc newPdf*(fontPath: string, size = psA4, customW = 0.0,
     customH = 0.0, margin = defaultMarginPt): Pdf =
   ## Open a document with one font loaded from `fontPath`
-  ## (TrueType/OpenType, shaped and embedded via HarfBuzz). More fonts
+  ## (TrueType/OpenType, shaped and embedded via harfnim). More fonts
   ## arrive later with `loadFont`/`setFont`.
   let fontBytes =
     try: readFile(fontPath)
@@ -230,7 +230,7 @@ proc newPdf*(size = psA4, customW = 0.0,
     customH = 0.0, margin = defaultMarginPt): Pdf =
   ## Open a document with the builtin Helvetica body: no font file
   ## needed, nothing embedded, WinAnsi text only. `loadFont` upgrades
-  ## any name (including `"body"`) to a HarfBuzz-embedded font.
+  ## any name (including `"body"`) to a harfnim-embedded font.
   let (w, h) = pageDims(size, customW, customH)
   if margin <= 0.0 or 2.0 * margin >= min(w, h):
     pdfFail("margin must be positive and smaller than half the page")
@@ -262,7 +262,7 @@ proc newPdf*(fontBytes, baseName: string, size = psA4, customW = 0.0,
 
 proc loadFont*(doc: var Pdf, name, path: string) =
   ## Load a font program for `setFont` (replacing any face already
-  ## loaded under `name`, including the builtin default). HarfBuzz
+  ## loaded under `name`, including the builtin default). harfnim
   ## shapes it, the writer embeds a subset on `save`/`build`.
   let fontBytes =
     try: readFile(path)
@@ -355,7 +355,7 @@ proc emitWrapped(doc: var Pdf, text: string) =
     doc.cursorY -= doc.curSize * 1.2
 
 proc paragraph*(doc: var Pdf, text: string) =
-  ## Flowing paragraph: greedy wrap on HarfBuzz widths, automatic page
+  ## Flowing paragraph: greedy wrap on shaped widths, automatic page
   ## breaks. No hyphenation or justification in v1.
   if text.len == 0:
     doc.cursorY -= doc.curSize * 0.6
@@ -531,7 +531,7 @@ proc save*(doc: var Pdf, path: string) =
   writeFile(path, doc.build())
 
 proc close*(doc: var Pdf) =
-  ## Release the HarfBuzz shaping contexts. Idempotent; call when the
+  ## Release the shaping contexts. Idempotent; call when the
   ## document is done (shaping after close is invalid).
   for k, v in doc.fonts.mpairs:
     close(v.sf)

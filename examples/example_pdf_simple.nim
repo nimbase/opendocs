@@ -16,7 +16,7 @@ var doc =
 doc.setTitle("Simple PDF")
 doc.setAuthor("opengraphics")
 doc.heading("Hello writer")
-doc.paragraph("This paragraph wraps on HarfBuzz widths and flows " &
+doc.paragraph("This paragraph wraps on shaped widths and flows " &
   "onto new pages automatically. The font subset embeds on save.")
 doc.textAt("absolute at 72, 72", 72.0, 72.0)
 

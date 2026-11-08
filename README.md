@@ -16,7 +16,7 @@
 - Read & Write DOCX and PDFs programatically
 - Encrypt & Decrypt using [nimcypher](https://github.com/nimbase/nimcypher)
 - Built-in compressor and decompressor via [zlib](https://github.com/status-im/nim-zlib)
-- Text shaping & Font embedding via [harfbuzz](https://github.com/nimbase/harfbuzz-nim)<br>
+- Text shaping & Font embedding via [harfnim](https://github.com/nimbase/harfnim) (pure Nim)<br>
   _shaping, measuring, wrapping & subsetting TTF/OpenType, incl. CJK & emoji_
 - High-performance image handling via [libvips](https://github.com/openpeeps/libvips-nim) (TO BE MOVED AT NIMBASE)<br>
   _decode, resize & recompress JPEG/PNG with alpha for embedding & extraction_
@@ -133,9 +133,9 @@ import opendocs/pdf
 # No font file needed: the body starts on builtin Helvetica
 # (unembedded, viewer-rendered, WinAnsi text only).
 var doc = newPdf()
-# Or start embedded: the program shapes via HarfBuzz and embeds as a
+# Or start embedded: the program shapes via harfnim and embeds as a
 # subset on save, with full Unicode.
-# var doc = newPdf("../harfbuzz/tests/data/DejaVuSans.ttf")
+# var doc = newPdf("tests/data/fonts/DejaVuSans.ttf")
 doc.setTitle("Hello")
 doc.heading("Hello writer")
 doc.paragraph("Wrapped on shaped widths, auto page breaks.")
@@ -188,7 +188,7 @@ var u = beginUpdate(readFile("hello.pdf"))
 writeFile("hello-v2.pdf", u.finishUpdate())
 ```
 
-#### Embedding a font (harfbuzz, low level)
+#### Embedding a font (harfnim, low level)
 ```nim
 import opendocs/pdf
 import opendocs/pdf/write
@@ -196,10 +196,10 @@ import opendocs/pdf/shape
 import opendocs/pdf/fontembed
 import std/tables
 
-# Any TrueType/OpenType program works; DejaVu ships with harfbuzz.
-let prog = readFile("../harfbuzz/tests/data/DejaVuSans.ttf")
+# Any TrueType/OpenType program works; DejaVu is vendored for tests.
+let prog = readFile("tests/data/fonts/DejaVuSans.ttf")
 
-# One cached HarfBuzz face per program: shaping, measuring, subsetting.
+# One cached shaping context per program: shaping, measuring, subsetting.
 var sf = openShapedFont(prog)
 defer: close(sf)
 
@@ -240,7 +240,7 @@ defer: close(sf)
 # font travels with the use from the first call.
 var use = CidFontUse(fontBytes: prog, baseName: "NotoSansJP")
 
-# Lines shape through HarfBuzz and show as 2-byte Identity-H CIDs;
+# Lines shape through harfnim and show as 2-byte Identity-H CIDs;
 # kern corrections land in the TJ array automatically.
 let content = drawCidLine(use, sf, 72.0, 720.0, "F3", 24.0, "日本語あAX")
 var b = newPdfBuilder()

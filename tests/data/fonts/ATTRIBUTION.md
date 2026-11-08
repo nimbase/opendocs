@@ -1,10 +1,8 @@
 # Font provenance
 
-`DejaVuSans.ttf` and `LICENSE.dejavu.txt` are vendored from the sibling
-harfbuzz checkout (`../harfbuzz/tests/data/`) so the writer-side font
-suite runs hermetically. They were previously an undeclared sibling-path
-dependency, which meant CI silently skipped 10 tests whenever that
-checkout was absent.
+`DejaVuSans.ttf` and `LICENSE.dejavu.txt` are vendored (Bitstream Vera
+lineage, DejaVu changes public domain) so the writer-side font suite
+runs hermetically.
 
 Bitstream Vera Fonts Copyright, Copyright (c) 2003 Bitstream, Inc.
 DejaVu changes are in the public domain. The licence permits

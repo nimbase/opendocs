@@ -15,11 +15,7 @@ import std/unicode
 import nimcypher/algos/rc4
 import nimcypher/algos/sha256
 import checksums/md5
-import harfbuzz/hb_blob
-import harfbuzz/hb_common
-import harfbuzz/hb_face
-import harfbuzz/hb_set
-import harfbuzz/hb_subset
+import harfnim/subset as hsubset
 import image/buffer
 import image/color
 import image/dynamic
@@ -311,20 +307,11 @@ proc subsetDejaVu(unicodes: seq[int]): tuple[bytes: string,
     quit("missing " & DejaVuPath &
       " (vendored font required to regenerate fixtures)")
   let src = readFile(DejaVuPath)
-  let blob = hb_blob_create(src.cstring, src.len.cuint,
-    HB_MEMORY_MODE_READONLY, nil, nil)
-  let face = hb_face_create(blob, 0)
-  let input = hb_subset_input_create_or_fail()
-  let uset = hb_subset_input_unicode_set(input)
+  var uni: seq[uint32] = @[]
   for u in unicodes:
-    hb_set_add(uset, hb_codepoint_t(u))
-  let sub = hb_subset_or_fail(face, input)
-  let sblob = hb_face_reference_blob(sub)
-  var n: cuint = 0
-  let data = hb_blob_get_data(sblob, addr n)
-  result.bytes = newString(n)
-  if n > 0:
-    copyMem(addr result.bytes[0], data, n)
+    uni.add(uint32(u))
+  let (bytes, _) = hsubset.subsetFontString(src, uni)
+  result.bytes = bytes
   var txt = ""
   for u in unicodes:
     txt.add($Rune(u))
@@ -333,11 +320,6 @@ proc subsetDejaVu(unicodes: seq[int]): tuple[bytes: string,
   for g in shaped.glyphs:
     if g.cluster >= 0 and g.cluster < unicodes.len:
       result.advances[g.cluster] = g.xAdvance
-  hb_blob_destroy(sblob)
-  hb_face_destroy(sub)
-  hb_subset_input_destroy(input)
-  hb_face_destroy(face)
-  hb_blob_destroy(blob)
 
 proc writeText() =
   let sub = subsetDejaVu(@[65, 66, 67])

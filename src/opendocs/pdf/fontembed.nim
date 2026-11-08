@@ -1,4 +1,4 @@
-## PDF font embedding for the writer, backed by HarfBuzz.
+## PDF font embedding for the writer, backed by harfnim.
 ##
 ## The M6 builder assembles pages from caller-supplied dictionaries,
 ## which left every caller hand-rolling font objects. This module
@@ -7,8 +7,8 @@
 ## programs with matching /Widths and /ToUnicode, so our own reader
 ## round-trips the text.
 ##
-## HarfBuzz supplies the font intelligence (shaping for measurement,
-## subsetting for size); every COS object is ours. Typical flow:
+## harfnim supplies the font intelligence (shaping for measurement,
+## pure-Nim subsetting for size); every COS object is ours. Typical flow:
 ##
 ##   var use = FontUse(fontBytes: dejavu, baseName: "DejaVuSans")
 ##   let words = wrapText(sf, "Hello writer", 24.0, 468.0)
@@ -24,25 +24,19 @@
 ##
 ## Encoding boundary: the `FontUse` path above is WinAnsi only and
 ## fails loudly outside it. The `CidFontUse` path below covers full
-## Unicode: lines are shaped with HarfBuzz, shown as 2-byte CIDs under
+## Unicode: lines are shaped with harfnim, shown as 2-byte CIDs under
 ## /Identity-H in a Type0 font, and mapped back to Unicode with a
 ## /ToUnicode CMap, so our own reader round-trips the text. Color
-## glyphs pass through whatever HarfBuzz subsets (COLR, CBDT, sbix);
-## SVG-in-OpenType color has no subset support upstream and fails
-## loudly. System fonts are out of scope: the caller supplies the
-## program bytes (for example from the harfbuzz checkout's test data).
+## bitmap/vector tables (COLR, CBDT, sbix) are dropped by the subsetter
+## (outlines still map, so text round-trips); SVG-in-OpenType color
+## has no subset support and fails loudly. System fonts are out of
+## scope: the caller supplies the program bytes.
 
 import std/algorithm
 import std/strutils
 import std/tables
 import std/unicode
-import harfbuzz/hb_blob
-import harfbuzz/hb_common
-import harfbuzz/hb_face
-import harfbuzz/hb_font
-import harfbuzz/hb_map
-import harfbuzz/hb_set
-import harfbuzz/hb_subset
+import harfnim/subset as hsubset
 import ./cos
 import ./write
 import ./shape
@@ -80,34 +74,18 @@ proc noteUse*(u: var FontUse, text: string) =
 
 proc subsetFont*(fontBytes: string,
     unicodes: openArray[uint32]): string =
-  ## Subset a TrueType/OpenType program to `unicodes` via HarfBuzz,
+  ## Subset a TrueType/OpenType program to `unicodes` with harfnim,
   ## keeping hinting and `.notdef`. Fails loudly on empty input or a
   ## failed subset operation.
   if fontBytes.len == 0:
     pdfFail("cannot subset an empty font program")
-  var sf = openShapedFont(fontBytes)
-  defer: close(sf)
-  let input = hb_subset_input_create_or_fail()
-  if input == nil:
-    pdfFail("HarfBuzz refused the subset input")
-  defer: hb_subset_input_destroy(input)
-  let uset = hb_subset_input_unicode_set(input)
-  for u in unicodes:
-    hb_set_add(uset, hb_codepoint_t(u))
-  let sub = hb_subset_or_fail(sf.face, input)
-  if sub == nil:
-    pdfFail("HarfBuzz failed to subset the font program")
-  defer: hb_face_destroy(sub)
-  let bb = hb_face_reference_blob(sub)
-  if bb == nil:
-    pdfFail("subset produced no font blob")
-  defer: hb_blob_destroy(bb)
-  var n: cuint = 0
-  let p = hb_blob_get_data(bb, addr n)
-  if p == nil or n == 0:
-    pdfFail("subset produced no font bytes")
-  result = newString(int(n))
-  copyMem(addr result[0], p, int(n))
+  try:
+    let (sub, _) = hsubset.subsetFontString(fontBytes, unicodes)
+    if sub.len == 0:
+      pdfFail("harfnim subset produced no font bytes")
+    return sub
+  except hsubset.SubsetError as e:
+    pdfFail("harfnim failed to subset the font program (" & e.msg & ")")
 
 proc measureText*(sf: ShapedFont, text: string,
     size: float64): float64 =
@@ -324,10 +302,9 @@ proc embedFont*(b: var PdfBuilder, baseName: string, fontBytes: string,
   var capH = ext.ascender
   let hGlyph = sf.nominalGlyph(0x48)
   if hGlyph != 0:
-    var e: hb_glyph_extents_t
-    if hb_font_get_glyph_extents(sf.font, hb_codepoint_t(hGlyph),
-        addr e) != 0:
-      capH = int(e.height)
+    let e = sf.glyphExtents1000(hGlyph)
+    if e.ok:
+      capH = e.height
   let fileNum = b.addStream(CosObj(kind: coDict,
     keys: @["Length1"],
     vals: @[CosObj(kind: coInt, ival: prog.len)]), prog)
@@ -378,7 +355,7 @@ proc finalizeFonts*(b: var PdfBuilder,
     result[n] = b.embedFont(u.baseName, u.fontBytes, u.codes, subset)
 
 # ---------------------------------------------------------------------------
-# CID-keyed Type0 fonts: full Unicode via HarfBuzz shaping
+# CID-keyed Type0 fonts: full Unicode via harfnim shaping
 # ---------------------------------------------------------------------------
 #
 # A `FontUse` fixes byte codes up front, which cannot survive subset
@@ -466,32 +443,20 @@ proc groupShaped(sf: ShapedFont, text: string,
     result.add(seg)
     i = j + 1
 
-proc hasTable(face: ptr hb_face_t, a, b, c, d: char): bool =
-  ## HarfBuzz returns an empty blob (not nil) for missing tables, so
-  ## presence means nonzero length.
-  let tb = hb_face_reference_table(face, HB_TAG(a, b, c, d))
-  if tb == nil:
-    return false
-  var n: cuint = 0
-  discard hb_blob_get_data(tb, addr n)
-  hb_blob_destroy(tb)
-  n > 0
-
 proc svgOnly(sf: ShapedFont, gid: uint32, r: Rune): bool =
-  ## Heuristic for SVG-in-OpenType color glyphs, which HarfBuzz
-  ## cannot subset (dropped silently upstream): an SVG table exists
-  ## and the glyph has no outline extents despite a nonzero advance.
-  ## Whitespace and zero-advance marks are exempt.
-  if not hasTable(sf.face, 'S', 'V', 'G', ' '):
+  ## Heuristic for SVG-in-OpenType color glyphs, which the subsetter
+  ## cannot carry (dropped tables): an SVG table exists and the glyph
+  ## has no outline extents despite a nonzero advance. Whitespace and
+  ## zero-advance marks are exempt.
+  if not sf.tablePresent('S', 'V', 'G', ' '):
     return false
   if r == Rune(0x20) or r == Rune(0x09) or r == Rune(0x0A) or
       r == Rune(0x0D) or r == Rune(0x00A0):
     return false
   if sf.glyphAdvance1000(gid) == 0.0:
     return false
-  var e: hb_glyph_extents_t
-  if hb_font_get_glyph_extents(sf.font, hb_codepoint_t(gid),
-      addr e) == 0:
+  let e = sf.glyphExtents1000(gid)
+  if not e.ok:
     return true
   e.width == 0 and e.height == 0
 
@@ -501,12 +466,12 @@ proc noteCidUse*(u: var CidFontUse, sf: ShapedFont, text: string) =
   ## glyph ids. Fails loudly on uncovered runes and SVG-only color.
   for seg in groupShaped(sf, text, u):
     discard seg
-  if hasTable(sf.face, 'S', 'V', 'G', ' '):
+  if sf.tablePresent('S', 'V', 'G', ' '):
     for gid, cid in u.cids.pairs:
       for r in u.texts[cid].runes:
         if svgOnly(sf, gid, r):
           pdfFail("text U+" & toHex(int(r), 4) &
-            " is SVG-only color, which HarfBuzz cannot subset")
+            " is SVG-only color, which harfnim cannot subset")
 
 proc drawCidLine*(u: var CidFontUse, sf: ShapedFont, x, y: float64,
     resName: string, size: float64, text: string): string =
@@ -584,48 +549,18 @@ proc oldToNewGids(fontBytes: string,
     unicodes: openArray[uint32]): tuple[prog: string,
       mapping: Table[uint32, uint32]] =
   ## Subset by `unicodes` and return the program plus the full-font
-  ## GID to subset GID map, via a subset plan (same input executes
-  ## the plan, so the mapping describes the bytes we embed).
+  ## GID to subset GID map. The mapping describes the bytes we embed
+  ## (same subset call). Variation axes pin to default implicitly:
+  ## the subsetter drops variation tables and keeps base outlines.
   if fontBytes.len == 0:
     pdfFail("cannot subset an empty font program")
-  var sf = openShapedFont(fontBytes)
-  defer: close(sf)
-  let input = hb_subset_input_create_or_fail()
-  if input == nil:
-    pdfFail("HarfBuzz refused the subset input")
-  defer: hb_subset_input_destroy(input)
-  let uset = hb_subset_input_unicode_set(input)
-  for u in unicodes:
-    hb_set_add(uset, hb_codepoint_t(u))
-  discard hb_subset_input_pin_all_axes_to_default(input, sf.face)
-  hb_subset_input_set_flags(input, HB_SUBSET_FLAGS_DOWNGRADE_CFF2)
-  let plan = hb_subset_plan_create_or_fail(sf.face, input)
-  if plan == nil:
-    pdfFail("HarfBuzz refused the subset plan")
-  defer: hb_subset_plan_destroy(plan)
-  let sub = hb_subset_plan_execute_or_fail(plan)
-  if sub == nil:
-    pdfFail("HarfBuzz failed to subset the font program")
-  defer: hb_face_destroy(sub)
-  let bb = hb_face_reference_blob(sub)
-  if bb == nil:
-    pdfFail("subset produced no font blob")
-  defer: hb_blob_destroy(bb)
-  var n: cuint = 0
-  let p = hb_blob_get_data(bb, addr n)
-  if p == nil or n == 0:
-    pdfFail("subset produced no font bytes")
-  var prog = newString(int(n))
-  copyMem(addr prog[0], p, int(n))
-  let m = hb_subset_plan_old_to_new_glyph_mapping(plan)
-  if m == nil:
-    pdfFail("subset plan has no glyph mapping")
-  var mapping = initTable[uint32, uint32]()
-  var idx: cint = -1
-  var k, v: hb_codepoint_t
-  while hb_map_next(m, addr idx, addr k, addr v) != 0:
-    mapping[uint32(k)] = uint32(v)
-  (prog, mapping)
+  try:
+    let (prog, mapping) = hsubset.subsetFontString(fontBytes, unicodes)
+    if prog.len == 0:
+      pdfFail("harfnim subset produced no font bytes")
+    (prog, mapping)
+  except hsubset.SubsetError as e:
+    pdfFail("harfnim failed to subset the font program (" & e.msg & ")")
 
 proc embedCidFont*(b: var PdfBuilder, baseName: string,
     fontBytes: string, cids: Table[uint32, int],
@@ -653,8 +588,8 @@ proc embedCidFont*(b: var PdfBuilder, baseName: string,
       mapping[g] = g
   var sf = openShapedFont(prog)
   defer: close(sf)
-  let cff = hasTable(sf.face, 'C', 'F', 'F', ' ') or
-    hasTable(sf.face, 'C', 'F', 'F', '2')
+  let cff = sf.tablePresent('C', 'F', 'F', ' ') or
+    sf.tablePresent('C', 'F', 'F', '2')
   var maxCid = 0
   for c in cids.values:
     maxCid = max(maxCid, c)
@@ -686,31 +621,29 @@ proc embedCidFont*(b: var PdfBuilder, baseName: string,
     witems.add(CosObj(kind: coArray, items: ws))
     i = j + 1
   var bbox = (xMin: 0, yMin: 0, xMax: 0, yMax: 0)
-  if hasTable(sf.face, 'h', 'e', 'a', 'd'):
+  if sf.tablePresent('h', 'e', 'a', 'd'):
     bbox = sf.headBBox()
   else: ## bare CFF: union the used glyph extents instead
     for c in ncids:
-      var e: hb_glyph_extents_t
-      if hb_font_get_glyph_extents(sf.font,
-          hb_codepoint_t(newOfCid[c]), addr e) != 0:
-        bbox.xMin = min(bbox.xMin, int(e.x_bearing))
-        bbox.yMin = min(bbox.yMin, int(e.y_bearing + e.height))
-        bbox.xMax = max(bbox.xMax, int(e.x_bearing + e.width))
-        bbox.yMax = max(bbox.yMax, int(e.y_bearing))
+      let e = sf.glyphExtents1000(newOfCid[c])
+      if e.ok:
+        bbox.xMin = min(bbox.xMin, e.xBearing)
+        bbox.yMin = min(bbox.yMin, e.yBearing + e.height)
+        bbox.xMax = max(bbox.xMax, e.xBearing + e.width)
+        bbox.yMax = max(bbox.yMax, e.yBearing)
   let ext = sf.hExtents1000()
   var capH = ext.ascender
   let hGlyph = sf.nominalGlyph(0x48)
   if hGlyph != 0:
-    var e: hb_glyph_extents_t
-    if hb_font_get_glyph_extents(sf.font, hb_codepoint_t(hGlyph),
-        addr e) != 0:
-      capH = int(e.height)
+    let e = sf.glyphExtents1000(hGlyph)
+    if e.ok:
+      capH = e.height
   var fileDict = CosObj(kind: coDict, keys: @[], vals: @[])
   var fileKey = "FontFile2"
   if cff:
-    ## hb-subset always outputs sfnt-wrapped programs, which the PDF
-    ## spec (and poppler's sniffer) wants as /OpenType. Bare CFF data
-    ## only arrives via subset=false with a hand-supplied .cff, named
+    ## The subsetter always outputs sfnt-wrapped programs, which the
+    ## PDF spec (and poppler's sniffer) wants as /OpenType. Bare CFF
+    ## data only arrives via subset=false with a hand-supplied .cff, named
     ## /Type1C; CID-keyed bare CFF wants /CIDFontType0C instead, so
     ## subset CID-keyed inputs rather than embedding them raw.
     var sub = "OpenType"
