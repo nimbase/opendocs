@@ -114,6 +114,11 @@ from pdf/redact import RedactRect, markRedactions, applyRedactions,
 export RedactRect, markRedactions, applyRedactions,
   verifyNoFauxRedaction
 
+from pdf/optimize import OptimizeOptions, OptimizeStats,
+  defaultOptimizeOptions, checkOptimizeOptions, spaceAudit, optimizePdf
+export OptimizeOptions, OptimizeStats,
+  defaultOptimizeOptions, checkOptimizeOptions, spaceAudit, optimizePdf
+
 from pdf/layers import PdfLayer, docLayers, layerOCGs
 export PdfLayer, docLayers, layerOCGs
 

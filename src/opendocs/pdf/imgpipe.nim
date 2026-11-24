@@ -485,7 +485,7 @@ proc convertCoded(d: var PdfDoc, raw: PdfRawImage): PdfImage =
     encoding: if gray: ieGray else: ieRGB, hasAlpha: hasAlpha,
     pixels: rgb)
 
-proc convertRaw(d: var PdfDoc, raw: PdfRawImage): PdfImage =
+proc convertRaw*(d: var PdfDoc, raw: PdfRawImage): PdfImage =
   ## Raw samples through unpacking, color, and masks.
   if raw.width <= 0 or raw.height <= 0:
     pdfFail("image /" & raw.name & " has non-positive size")

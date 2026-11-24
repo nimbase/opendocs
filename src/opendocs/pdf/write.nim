@@ -133,7 +133,7 @@ proc padNum(v, width: int): string =
   while result.len < width:
     result = "0" & result
 
-proc emitFile(header: string, objs: seq[RawObj], size: int,
+proc emitFile*(header: string, objs: seq[RawObj], size: int,
     rootNum, rootGen: int, idFirst, idSecond: string,
     prev = -1, infoNum = 0, infoGen = 0, encryptNum = 0,
     encryptGen = 0): string =
@@ -627,7 +627,7 @@ proc hasBinaryFilter(s: CosObj): bool =
         return true
   false
 
-proc rewriteStream(o: CosObj, reflate: bool): string =
+proc rewriteStream*(o: CosObj, reflate: bool): string =
   var keys: seq[string] = @[]
   var vals: seq[CosObj] = @[]
   var raw = o.raw
