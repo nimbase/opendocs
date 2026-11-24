@@ -77,15 +77,17 @@ test "reader rejects indefinite and truncation":
 test "openssl agrees on a nested sequence":
   # asn1parse is the oracle: our bytes must parse as SEQ{INT, OID}.
   # Skipped where openssl is absent (pure-Nim assertions above cover
-  # the encoding either way).
+  # the encoding either way). NB: unittest.skip marks but does not
+  # stop the body, so the tool-gated part sits in the else branch.
   let blob = derSeq(derInt(128), derOid([1, 2, 840, 113549, 1, 7, 1]))
   check hexOf(blob) == "300F0202008006092A864886F70D010701"
   let exe = findExe("openssl")
   if exe.len == 0:
     skip()
-  writeFile("/tmp/der_oracle.der", blob)
-  let (outp, code) = execCmdEx(exe & " asn1parse -inform DER -in /tmp/der_oracle.der")
-  check code == 0
-  check "SEQUENCE" in outp
-  check "INTEGER" in outp
-  check "OBJECT" in outp
+  else:
+    writeFile("/tmp/der_oracle.der", blob)
+    let (outp, code) = execCmdEx(exe & " asn1parse -inform DER -in /tmp/der_oracle.der")
+    check code == 0
+    check "SEQUENCE" in outp
+    check "INTEGER" in outp
+    check "OBJECT" in outp

@@ -126,31 +126,33 @@ test "openssl verifies our cms":
   let exe = findExe("openssl")
   if exe.len == 0:
     skip()
-  let draft = addSignaturePlaceholder(textBase(), "Sig1", 8192)
-  let signed = signPlaceholder(draft, leafSigner())
-  writeFile("/tmp/p4b_ours.pdf", signed.file)
-  let covered = coveredBytes(signed.file, signed.byteRange)
-  writeFile("/tmp/p4b_covered.bin", covered)
-  writeFile("/tmp/p4b_ours.der",
-    cmsOf(signed.file, signed.contentsAt + 1, signed.contentsLen - 1))
-  let (outp, code) = execCmdEx(exe & " cms -verify -in /tmp/p4b_ours.der" &
-    " -inform DER -content /tmp/p4b_covered.bin -CAfile " & SignDir &
-    "ca.cert.pem -purpose any -binary -out /dev/null")
-  check code == 0
+  else:
+    let draft = addSignaturePlaceholder(textBase(), "Sig1", 8192)
+    let signed = signPlaceholder(draft, leafSigner())
+    writeFile("/tmp/p4b_ours.pdf", signed.file)
+    let covered = coveredBytes(signed.file, signed.byteRange)
+    writeFile("/tmp/p4b_covered.bin", covered)
+    writeFile("/tmp/p4b_ours.der",
+      cmsOf(signed.file, signed.contentsAt + 1, signed.contentsLen - 1))
+    let (outp, code) = execCmdEx(exe & " cms -verify -in /tmp/p4b_ours.der" &
+      " -inform DER -content /tmp/p4b_covered.bin -CAfile " & SignDir &
+      "ca.cert.pem -purpose any -binary -out /dev/null")
+    check code == 0
 
 test "we verify openssl's cms":
   let exe = findExe("openssl")
   if exe.len == 0:
     skip()
-  let draft = addSignaturePlaceholder(textBase(), "Sig1", 8192)
-  let covered = coveredBytes(draft.file, draft.byteRange)
-  writeFile("/tmp/p4b_covered.bin", covered)
-  let (_, sc) = execCmdEx(exe & " cms -sign -signer " & SignDir &
-    "leaf.cert.pem -inkey " & SignDir &
-    "leaf.key -in /tmp/p4b_covered.bin -outform DER -binary -out /tmp/p4b_ossl.der")
-  check sc == 0
-  let filled = fillPlaceholder(draft, readFile("/tmp/p4b_ossl.der"))
-  let r = verifySignature(filled.file, "Sig1",
-    @[readFile(SignDir & "ca.cert.der")])
-  check r.valid
-  check r.digestOk and r.sigOk and r.chainOk
+  else:
+    let draft = addSignaturePlaceholder(textBase(), "Sig1", 8192)
+    let covered = coveredBytes(draft.file, draft.byteRange)
+    writeFile("/tmp/p4b_covered.bin", covered)
+    let (_, sc) = execCmdEx(exe & " cms -sign -signer " & SignDir &
+      "leaf.cert.pem -inkey " & SignDir &
+      "leaf.key -in /tmp/p4b_covered.bin -outform DER -binary -out /tmp/p4b_ossl.der")
+    check sc == 0
+    let filled = fillPlaceholder(draft, readFile("/tmp/p4b_ossl.der"))
+    let r = verifySignature(filled.file, "Sig1",
+      @[readFile(SignDir & "ca.cert.der")])
+    check r.valid
+    check r.digestOk and r.sigOk and r.chainOk

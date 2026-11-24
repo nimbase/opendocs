@@ -69,48 +69,50 @@ test "timestamp round-trips through openssl ts":
   let exe = findExe("openssl")
   if exe.len == 0:
     skip()
-  let cnf = tsaSetup()
-  let (file, sigValue, _) = signedPdf()
-  writeFile("/tmp/ts_sig.bin", sigValue)
-  let req = buildTimestampReq(sigValue)
-  writeFile("/tmp/ts_req.der", req)
-  let (_, sc1) = execCmdEx(exe & " ts -reply -config " & cnf &
-    " -queryfile /tmp/ts_req.der -signer " & SignDir &
-    "tsa.cert.pem -inkey " & SignDir &
-    "tsa.key -out /tmp/ts_resp.der")
-  check sc1 == 0
-  let (token, genTime) = parseTimestampResp(
-    readFile("/tmp/ts_resp.der"), sigValue)
-  check token.len > 0
-  check genTime.year >= 2026
-  let (ok, _, warnings) = verifyTimestampToken(token, sigValue,
-    @[readFile(SignDir & "tsa.cert.der")])
-  check ok
-  check warnings.len == 0
-  let stamped = embedTimestamp(file, "Sig1", token)
-  let r = verifySignature(stamped, "Sig1",
-    @[readFile(SignDir & "ca.cert.der")])
-  check r.valid
-  check r.sigOk
-  # The token travels inside the new signature revision (hex-encoded).
-  check token.len > 0
-  check hexEncode(token) in stamped
+  else:
+    let cnf = tsaSetup()
+    let (file, sigValue, _) = signedPdf()
+    writeFile("/tmp/ts_sig.bin", sigValue)
+    let req = buildTimestampReq(sigValue)
+    writeFile("/tmp/ts_req.der", req)
+    let (_, sc1) = execCmdEx(exe & " ts -reply -config " & cnf &
+      " -queryfile /tmp/ts_req.der -signer " & SignDir &
+      "tsa.cert.pem -inkey " & SignDir &
+      "tsa.key -out /tmp/ts_resp.der")
+    check sc1 == 0
+    let (token, genTime) = parseTimestampResp(
+      readFile("/tmp/ts_resp.der"), sigValue)
+    check token.len > 0
+    check genTime.year >= 2026
+    let (ok, _, warnings) = verifyTimestampToken(token, sigValue,
+      @[readFile(SignDir & "tsa.cert.der")])
+    check ok
+    check warnings.len == 0
+    let stamped = embedTimestamp(file, "Sig1", token)
+    let r = verifySignature(stamped, "Sig1",
+      @[readFile(SignDir & "ca.cert.der")])
+    check r.valid
+    check r.sigOk
+    # The token travels inside the new signature revision (hex-encoded).
+    check token.len > 0
+    check hexEncode(token) in stamped
 
 test "timestamp rejects mismatched imprints":
   let exe = findExe("openssl")
   if exe.len == 0:
     skip()
-  let cnf = tsaSetup()
-  let (_, sigValue, _) = signedPdf()
-  let req = buildTimestampReq(sigValue)
-  writeFile("/tmp/ts_req.der", req)
-  let (_, sc1) = execCmdEx(exe & " ts -reply -config " & cnf &
-    " -queryfile /tmp/ts_req.der -signer " & SignDir &
-    "tsa.cert.pem -inkey " & SignDir &
-    "tsa.key -out /tmp/ts_resp.der")
-  check sc1 == 0
-  expect PdfError:
-    discard parseTimestampResp(readFile("/tmp/ts_resp.der"), "wrong!")
+  else:
+    let cnf = tsaSetup()
+    let (_, sigValue, _) = signedPdf()
+    let req = buildTimestampReq(sigValue)
+    writeFile("/tmp/ts_req.der", req)
+    let (_, sc1) = execCmdEx(exe & " ts -reply -config " & cnf &
+      " -queryfile /tmp/ts_req.der -signer " & SignDir &
+      "tsa.cert.pem -inkey " & SignDir &
+      "tsa.key -out /tmp/ts_resp.der")
+    check sc1 == 0
+    expect PdfError:
+      discard parseTimestampResp(readFile("/tmp/ts_resp.der"), "wrong!")
 
 test "dss embeds certs and keeps the signature":
   let (file, _, _) = signedPdf()
@@ -132,15 +134,19 @@ test "dss rejects empty input":
     discard embedDssCerts(file, @[])
 
 test "render preview needs poppler":
-  if not hasPdftoppm():
+  # NB: unittest.skip marks but does NOT stop the test body, so the
+  # tool-gated body must sit in the else branch.
+  if hasPdftoppm():
+    let png = renderPagePreview(textBase())
+    check png.len > 100
+    check png[0] == '\x89' and png[1] == 'P' and png[2] == 'N' and
+      png[3] == 'G'
+  else:
     skip()
-  let png = renderPagePreview(textBase())
-  check png.len > 100
-  check png[0] == '\x89' and png[1] == 'P' and png[2] == 'N' and
-    png[3] == 'G'
 
 test "render rejects bad pages":
-  if not hasPdftoppm():
+  if hasPdftoppm():
+    expect PdfError:
+      discard renderPagePreview(textBase(), 99)
+  else:
     skip()
-  expect PdfError:
-    discard renderPagePreview(textBase(), 99)
