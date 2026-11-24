@@ -54,34 +54,43 @@ test "timestamp request parses as UTCTime-free GeneralizedTime":
   let top = derParse(req)
   check top.tag == 0x30
 
-proc tsaSetup(): string =
-  ## Minimal openssl TSA config (local reply generation only).
-  writeFile("/tmp/tsa_test.cnf",
-    "[ tsa ]\ndefault_tsa = mytsa\n[ mytsa ]\ndir = /tmp\n" &
-    "serial = /tmp/tsa_test.srl\ncrypto_device = builtin\n" &
+proc tsaSetup(): tuple[cnf, dir: string] =
+  ## Minimal openssl TSA config (local reply generation only) under the
+  ## OS temp dir (never hardcoded /tmp: absent on Windows). OpenSSL
+  ## config values use forward slashes so backslash escapes on Windows
+  ## cannot misparse.
+  let dir = getTempDir() / "opendocs_tsa"
+  createDir(dir)
+  let cnfPath = dir / "tsa_test.cnf"
+  let srlPath = dir / "tsa_test.srl"
+  let fwd = proc(p: string): string = p.replace('\\', '/')
+  writeFile(cnfPath,
+    "[ tsa ]\ndefault_tsa = mytsa\n[ mytsa ]\ndir = " & fwd(dir) & "\n" &
+    "serial = " & fwd(srlPath) & "\ncrypto_device = builtin\n" &
     "signer_digest = sha256\ncerts = " & SignDir & "tsa.cert.pem\n" &
     "ess_cert_id_alg = sha256\ndefault_policy = 1.2.3\n" &
     "digests = sha1, sha256, sha384, sha512\n")
-  writeFile("/tmp/tsa_test.srl", "01")
-  "/tmp/tsa_test.cnf"
+  writeFile(srlPath, "01")
+  (cnfPath, dir)
 
 test "timestamp round-trips through openssl ts":
   let exe = findExe("openssl")
   if exe.len == 0:
     skip()
   else:
-    let cnf = tsaSetup()
+    let (cnf, dir) = tsaSetup()
     let (file, sigValue, _) = signedPdf()
-    writeFile("/tmp/ts_sig.bin", sigValue)
     let req = buildTimestampReq(sigValue)
-    writeFile("/tmp/ts_req.der", req)
-    let (_, sc1) = execCmdEx(exe & " ts -reply -config " & cnf &
-      " -queryfile /tmp/ts_req.der -signer " & SignDir &
-      "tsa.cert.pem -inkey " & SignDir &
-      "tsa.key -out /tmp/ts_resp.der")
+    writeFile(dir / "ts_req.der", req)
+    let (_, sc1) = execCmdEx(quoteShell(exe) & " ts -reply -config " &
+      quoteShell(cnf) & " -queryfile " &
+      quoteShell(dir / "ts_req.der") & " -signer " &
+      quoteShell(SignDir & "tsa.cert.pem") & " -inkey " &
+      quoteShell(SignDir & "tsa.key") & " -out " &
+      quoteShell(dir / "ts_resp.der"))
     check sc1 == 0
     let (token, genTime) = parseTimestampResp(
-      readFile("/tmp/ts_resp.der"), sigValue)
+      readFile(dir / "ts_resp.der"), sigValue)
     check token.len > 0
     check genTime.year >= 2026
     let (ok, _, warnings) = verifyTimestampToken(token, sigValue,
@@ -102,17 +111,19 @@ test "timestamp rejects mismatched imprints":
   if exe.len == 0:
     skip()
   else:
-    let cnf = tsaSetup()
+    let (cnf, dir) = tsaSetup()
     let (_, sigValue, _) = signedPdf()
     let req = buildTimestampReq(sigValue)
-    writeFile("/tmp/ts_req.der", req)
-    let (_, sc1) = execCmdEx(exe & " ts -reply -config " & cnf &
-      " -queryfile /tmp/ts_req.der -signer " & SignDir &
-      "tsa.cert.pem -inkey " & SignDir &
-      "tsa.key -out /tmp/ts_resp.der")
+    writeFile(dir / "ts_req.der", req)
+    let (_, sc1) = execCmdEx(quoteShell(exe) & " ts -reply -config " &
+      quoteShell(cnf) & " -queryfile " &
+      quoteShell(dir / "ts_req.der") & " -signer " &
+      quoteShell(SignDir & "tsa.cert.pem") & " -inkey " &
+      quoteShell(SignDir & "tsa.key") & " -out " &
+      quoteShell(dir / "ts_resp.der"))
     check sc1 == 0
     expect PdfError:
-      discard parseTimestampResp(readFile("/tmp/ts_resp.der"), "wrong!")
+      discard parseTimestampResp(readFile(dir / "ts_resp.der"), "wrong!")
 
 test "dss embeds certs and keeps the signature":
   let (file, _, _) = signedPdf()

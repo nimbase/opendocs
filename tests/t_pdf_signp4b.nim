@@ -127,31 +127,42 @@ test "openssl verifies our cms":
   if exe.len == 0:
     skip()
   else:
+    let tmp = getTempDir()
     let draft = addSignaturePlaceholder(textBase(), "Sig1", 8192)
     let signed = signPlaceholder(draft, leafSigner())
-    writeFile("/tmp/p4b_ours.pdf", signed.file)
+    writeFile(tmp / "p4b_ours.pdf", signed.file)
     let covered = coveredBytes(signed.file, signed.byteRange)
-    writeFile("/tmp/p4b_covered.bin", covered)
-    writeFile("/tmp/p4b_ours.der",
+    writeFile(tmp / "p4b_covered.bin", covered)
+    writeFile(tmp / "p4b_ours.der",
       cmsOf(signed.file, signed.contentsAt + 1, signed.contentsLen - 1))
-    let (outp, code) = execCmdEx(exe & " cms -verify -in /tmp/p4b_ours.der" &
-      " -inform DER -content /tmp/p4b_covered.bin -CAfile " & SignDir &
-      "ca.cert.pem -purpose any -binary -out /dev/null")
+    # NB: no `-out /dev/null` here: that path does not exist on
+    # Windows. Without -out the verified content goes to stdout
+    # (captured by execCmdEx), and the exit code still signals success.
+    let (outp, code) = execCmdEx(quoteShell(exe) &
+      " cms -verify -in " & quoteShell(tmp / "p4b_ours.der") &
+      " -inform DER -content " & quoteShell(tmp / "p4b_covered.bin") &
+      " -CAfile " & quoteShell(SignDir & "ca.cert.pem") &
+      " -purpose any -binary")
     check code == 0
+    check outp.len >= 0 # stdout holds the verified content; code is the verdict
 
 test "we verify openssl's cms":
   let exe = findExe("openssl")
   if exe.len == 0:
     skip()
   else:
+    let tmp = getTempDir()
     let draft = addSignaturePlaceholder(textBase(), "Sig1", 8192)
     let covered = coveredBytes(draft.file, draft.byteRange)
-    writeFile("/tmp/p4b_covered.bin", covered)
-    let (_, sc) = execCmdEx(exe & " cms -sign -signer " & SignDir &
-      "leaf.cert.pem -inkey " & SignDir &
-      "leaf.key -in /tmp/p4b_covered.bin -outform DER -binary -out /tmp/p4b_ossl.der")
+    writeFile(tmp / "p4b_covered.bin", covered)
+    let (_, sc) = execCmdEx(quoteShell(exe) & " cms -sign -signer " &
+      quoteShell(SignDir & "leaf.cert.pem") & " -inkey " &
+      quoteShell(SignDir & "leaf.key") & " -in " &
+      quoteShell(tmp / "p4b_covered.bin") &
+      " -outform DER -binary -out " &
+      quoteShell(tmp / "p4b_ossl.der"))
     check sc == 0
-    let filled = fillPlaceholder(draft, readFile("/tmp/p4b_ossl.der"))
+    let filled = fillPlaceholder(draft, readFile(tmp / "p4b_ossl.der"))
     let r = verifySignature(filled.file, "Sig1",
       @[readFile(SignDir & "ca.cert.der")])
     check r.valid

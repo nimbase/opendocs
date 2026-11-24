@@ -85,8 +85,10 @@ test "openssl agrees on a nested sequence":
   if exe.len == 0:
     skip()
   else:
-    writeFile("/tmp/der_oracle.der", blob)
-    let (outp, code) = execCmdEx(exe & " asn1parse -inform DER -in /tmp/der_oracle.der")
+    let oraclePath = getTempDir() / "der_oracle.der"
+    writeFile(oraclePath, blob)
+    let (outp, code) = execCmdEx(quoteShell(exe) &
+      " asn1parse -inform DER -in " & quoteShell(oraclePath))
     check code == 0
     check "SEQUENCE" in outp
     check "INTEGER" in outp
