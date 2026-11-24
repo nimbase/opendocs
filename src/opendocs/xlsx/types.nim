@@ -199,6 +199,7 @@ type
     part*: string ## package path of the sheet XML
     parsed*: bool
     dimension*: string ## used-range ref, "" = absent
+    codeName*: string ## VBA object name from `<sheetPr>`, "" = absent
     rows*: seq[XlsxRow]
     merges*: seq[XlsxMerge] ## in file order; first listed wins overlaps
     hyperlinks*: seq[XlsxHyperlink] ## in file order

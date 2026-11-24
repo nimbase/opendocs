@@ -18,6 +18,7 @@ import buffalo
 import openparser/colors
 import openparser/xml
 import opendocs/zip
+import opendocs/ole2
 
 # Implementation split: model, shared helpers, cell refs, stylesheet,
 # number/date formatting, workbook, shared strings, sheets, rich text,
@@ -42,3 +43,4 @@ include xlsx/docprops
 include xlsx/reader
 include xlsx/emit
 include xlsx/write
+include xlsx/vba

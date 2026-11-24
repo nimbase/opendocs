@@ -191,6 +191,8 @@ proc parseSheet(f: XlsxFile, name: string): XlsxSheet =
     part: part, parsed: true)
   let dim = firstChildL(root, "dimension")
   if dim != nil: result.dimension = optAttr(dim, "ref")
+  let pr = firstChildL(root, "sheetPr")
+  if pr != nil: result.codeName = optAttr(pr, "codeName")
   let data = firstChildL(root, "sheetData")
   if data != nil:
     var posRow = 0

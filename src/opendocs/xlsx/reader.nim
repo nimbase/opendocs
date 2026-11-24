@@ -17,12 +17,25 @@ proc openXlsxBytes*(data: seq[byte],
   ## Open a spreadsheet package from memory. All five OOXML variants
   ## (`xlsx/xlsm/xltx/xltm/xlam`) share the generic zip+rels flow; macro
   ## parts (`xl/vbaProject.bin`) ride along untouched. Raises XlsxError
-  ## for corrupt packages; encrypted (OLE) inputs are rejected, never
-  ## silently misread.
+  ## for corrupt packages; OLE inputs are rejected, never silently
+  ## misread, with password-protected workbooks distinguished from
+  ## legacy binary packages.
   if data.len >= 8 and data[0 .. 7] == @oleMagic:
+    var encrypted = false
+    try:
+      let o = openOleBytes(data)
+      try:
+        encrypted = o.contains("EncryptedPackage")
+      finally:
+        o.closeOle()
+    except OleError:
+      discard # unparseable: falls through to the legacy message
+    if encrypted:
+      raise newException(XlsxError,
+        "password-protected workbook: decryption is not supported")
     raise newException(XlsxError,
-      "encrypted or legacy OLE package: password-protected workbooks " &
-      "are not supported")
+      "legacy OLE package: only OOXML workbooks (.xlsx/.xlsm/.xltx/" &
+      ".xltm/.xlam) are supported")
   var archive: ZipArchive
   try:
     archive = openZipBytes(data)

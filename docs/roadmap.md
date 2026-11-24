@@ -34,7 +34,8 @@ Todo:
 - XLSX writer W2 done (merges, column/row geometry, hyperlinks + sheet rels, defined names)
 - XLSX writer W3 done (cell styles, builtin + custom number formats, theme part)
 - XLSX writer W4 done (open-edit with carry-through minus calc chain)
-- XLSX Phase D (read-only OLE for `vbaProject.bin`)
+- [x] XLSX Phase D (read-only OLE for `vbaProject.bin`: ole2 reader, VBA listing, extension consistency)
+- [ ] OLE decryption (password-protected workbooks raise a distinct error; ECMA-376 decrypt deferred)
 - PPTX read + write
 
 ## Limits and errors

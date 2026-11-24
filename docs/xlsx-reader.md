@@ -63,6 +63,28 @@ workbook sheet count under `SheetCount` instead.
 
 See `tests/t_xlsx_docprops.nim`.
 
+## VBA macros (`xlsx/vba.nim`, `ole2.nim`)
+
+Read-only. `xl/vbaProject.bin` rides along untouched in every open;
+the VBA surface opens it as a compound file on demand.
+
+- `hasVbaProject(f): bool`, `getVbaProject(f): VbaProject`
+  (`present` + `entries` with storage paths) — absent part yields
+  `present == false`; a present-but-corrupt part fails loudly.
+- `readVbaStream(f, name): seq[byte]` — `VBA/dir`, case-insensitive.
+  Absent part, corrupt container, and unknown stream are three
+  distinguishable `XlsxError`s.
+- `getSheetCodeName(f, sheet): string` — `<sheetPr codeName>`, "" when
+  absent. Read, never joined on.
+- `checkVbaConsistency(f, ext)` — strict `.xlsx`/`.xltx` carrying a
+  macro part raises (non-conforming); everything else passes,
+  including macro-enabled extensions without a part (legal).
+- `openXlsxBytes` distinguishes password-protected workbooks
+  (`EncryptedPackage` present) from legacy OLE binaries with separate
+  messages. Full decryption (ECMA-376) is deferred, not attempted.
+
+See `tests/t_xlsx_vba.nim`, `tests/t_ole.nim`, `docs/ole.md`.
+
 ## Dates / formulas
 
 - All cell kinds: numbers, text, shared strings, bools, errors, dates. Formatted values with builtin number formats + 1900/1904 systems. Formulas as cached values plus formula text. Sheet names, A1 refs, case-insensitive lookup. Large workbooks via spill-to-disk; encrypted files rejected safely.
