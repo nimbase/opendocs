@@ -2,7 +2,7 @@
 
 Entry: `src/opendocs/xlsx.nim` includes `xlsx/types, base, cell, styles, numfmttok, numfmt, workbook, sharedstrings, sheet, richtext, reader`. Single canonical home `opendocs/xlsx`.
 
-Supported: xlsx, xlsm, xltx, xltm, xlam. Phase A (lazy sheets, shared strings, raw values, A1 utils, open flow) done. Phase B (eager styles, builtin formats, dates, 576-cell excelize oracle parity) done. Phase C (rich text done, hyperlinks/merges/dimensions/docProps partial), Phase D OLE read-only guard, writer not yet.
+Supported: xlsx, xlsm, xltx, xltm, xlam. Phase A (lazy sheets, shared strings, raw values, A1 utils, open flow) done. Phase B (eager styles, builtin formats, dates, 576-cell excelize oracle parity) done. Phase C done (rich text, hyperlinks, merges, dimensions, shared + normal formulas, defined names, docProps). Phase D OLE read-only guard, writer not yet.
 
 ```nim
 import opendocs/xlsx
@@ -46,6 +46,22 @@ defer: closeXlsx(g)
 - Defined names: `XlsxDefinedName(name, refersTo, scope, hidden, comment)`.
 - Columns: `XlsxCol(min, max, width, hasWidth, hidden, bestFit, customWidth, outlineLevel, collapsed)`.
 - Rich text: `XlsxRichRun(text, hasFont, font)`, `getCellRichText(f, sheet, ref)` — SST `si/r` + inline `is/r`, merge-anchor aware.
+
+## Document properties (`docprops.nim`)
+
+Flat strings throughout, matching excelize's `docProps.go`: dates stay
+raw ISO 8601 (never parsed), custom `vt:*` values flatten to text
+(`bool` becomes `"true"`/`"false"`; type info lost by design).
+Lookups are by local name, not prefix. Missing parts yield empty
+results, never an error; wrong roots fail loudly as `XlsxError`.
+`app.xml` sheet lists are not duplicated — `getAppProps` surfaces the
+workbook sheet count under `SheetCount` instead.
+
+- `XlsxDocProps(title, subject, creator, keywords, description, category, contentStatus, lastModifiedBy, identifier, language, version, revision, created, modified)`, `getDocProps(f)`.
+- `getAppProps(f): Table[string, string]` — scalar `app.xml` children by local name plus `SheetCount`.
+- `getCustomProps(f): Table[string, string]` — `name -> flattened value`; duplicate names: last wins.
+
+See `tests/t_xlsx_docprops.nim`.
 
 ## Dates / formulas
 

@@ -86,3 +86,9 @@ whole-column refs (`A:A`), a dangling `si` with no anchor, and a normal
 formula passthrough. Expected formulas were verified cell-by-cell against
 excelize (`GetCellFormula`) before being frozen into
 `tests/t_xlsx_formula.nim`. Consumed by that suite.
+
+`docprops_custom.xlsx` — `fixture1.xlsx` plus an injected
+`docProps/custom.xml` exercising every flattened `vt:*` kind (string,
+int, bool, float, filetime); the rest of the package is byte-identical
+to the fixture. No generator script: injected once with Python
+`zipfile` (`writestr`, deflated). Consumed by `tests/t_xlsx_docprops.nim`.

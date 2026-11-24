@@ -321,7 +321,7 @@ d.close()
 - [ ] TXT read + write
 - [x] XLSX reader Phase A (lazy sheets, shared strings, raw values, A1 utils; xlsx/xlsm/xltx/xltm/xlam open flow)
 - [x] XLSX reader Phase B (eager styles, builtin formats, dates, 576-cell excelize oracle parity)
-- [ ] XLSX reader Phase C (docProps remaining; rich text, hyperlinks, merges, dimensions, formulas done)
+- [x] XLSX reader Phase C (rich text, hyperlinks, merges, dimensions, formulas, docProps)
 - [ ] XLSX reader Phase D (read-only OLE for vbaProject.bin)
 - [ ] XLSX writer
 - [ ] PPTX read + write

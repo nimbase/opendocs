@@ -29,7 +29,7 @@ Todo:
 - ODT read + write
 - RTF read + write
 - TXT read + write
-- XLSX Phase C (docProps remaining; rich text, hyperlinks, merges, dimensions, formulas done)
+- XLSX Phase C done (rich text, hyperlinks, merges, dimensions, formulas, docProps)
 - XLSX Phase D (read-only OLE for `vbaProject.bin`)
 - XLSX writer
 - PPTX read + write

@@ -34,4 +34,5 @@ include xlsx/workbook
 include xlsx/sharedstrings
 include xlsx/sheet
 include xlsx/richtext
+include xlsx/docprops
 include xlsx/reader
