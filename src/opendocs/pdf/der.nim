@@ -65,22 +65,17 @@ proc derLen*(n: int): string =
 proc derTlv*(tag: DerTag, content: string): string =
   $char(tagByte(tag)) & derLen(content.len) & content
 
-proc derIntBytes*(raw: openArray[byte]): string =
-  ## Minimal signed encoding of a big-endian magnitude with sign bit.
+proc derIntBytes*(raw: string): string =
+  ## Minimal signed encoding of big-endian bytes with a sign bit.
   ## Callers pass magnitude bytes plus a leading zero when the high bit
   ## is set (non-negative), or pre-formed two's complement.
   var i = 0
-  while i + 1 < raw.len and raw[i] == 0 and
-      (raw[i + 1] and 0x80) == 0:
+  while i + 1 < raw.len and raw[i] == '\0' and
+      (byte(raw[i + 1]) and 0x80) == 0:
     inc i
   if i >= raw.len:
     return derTlv(dtInteger, "\0")
-  var body = ""
-  for j in i ..< raw.len:
-    body.add(char(raw[j]))
-  if body.len == 0:
-    return derTlv(dtInteger, "\0")
-  derTlv(dtInteger, body)
+  derTlv(dtInteger, raw[i .. ^1])
 
 proc derInt*(v: int64): string =
   ## Minimal two's complement for a machine int.

@@ -112,7 +112,7 @@ proc expectSeq(n: DerNode, what: string): seq[DerNode] =
     pdfFail(what & " is not a SEQUENCE")
   n.derChildren()
 
-proc getSeq(data: string, what: string): seq[DerNode] =
+proc getSeq*(data: string, what: string): seq[DerNode] =
   derParse(data).expectSeq(what)
 
 proc bmpToUtf8(raw: string): string =
@@ -484,7 +484,7 @@ proc toBytes(s: string): seq[byte] =
   for i in 0 ..< s.len:
     result[i] = byte(s[i])
 
-proc intMagnitude(raw: string): string =
+proc intMagnitude*(raw: string): string =
   ## DER INTEGER content to unsigned magnitude bytes: drops the sign
   ## pad (one leading zero ahead of a high-bit byte) and redundant
   ## zeros. Fails on empty and negative inputs.
@@ -517,7 +517,7 @@ proc rsaPublicKeyFromSpki*(spki: Spki): rsaAlgo.RsaPublicKey =
   rsaAlgo.RsaPublicKey(n: n, e: e,
     k: intMagnitude(kids[0].content).len)
 
-proc ecCurveOf(curveOid: string): ecdsaAlgo.EcCurve =
+proc ecCurveOf*(curveOid: string): ecdsaAlgo.EcCurve =
   if curveOid == oidContent(oidCurveP256):
     ecdsaAlgo.P256
   elif curveOid == oidContent(oidCurveP384):
@@ -565,7 +565,91 @@ proc rsaHashOf(sigOid: string): tuple[h: rsaAlgo.RsaHash, weak: bool] =
   else:
     pdfFail("unsupported RSA signature algorithm")
 
-proc derSigToRaw(sigDer: string, coordLen: int): seq[byte] =
+proc hashLenOf*(h: rsaAlgo.RsaHash): int =
+  case h
+  of rsaAlgo.rhSha256: 32
+  of rsaAlgo.rhSha384: 48
+  of rsaAlgo.rhSha512: 64
+  of rsaAlgo.rhSha1: 20
+
+proc parseRsaPssParams*(sigAlgDer: string): tuple[h: rsaAlgo.RsaHash,
+    saltLen: int] =
+  ## RSASSA-PSS parameters (RFC 4056): hash, MGF (must be MGF1 with the
+  ## same hash), salt length, trailer (must be 1). Absent parameters
+  ## mean the RFC 4056 defaults (SHA-1, salt 20).
+  let kids = getSeq(sigAlgDer, "signatureAlgorithm")
+  if kids.len == 0 or kids[0].tag != 0x06:
+    pdfFail("signatureAlgorithm has no OID")
+  if kids[0].content != oidContent([1, 2, 840, 113549, 1, 1, 10]):
+    pdfFail("not a RSASSA-PSS algorithm")
+  if kids.len == 1:
+    return (rsaAlgo.rhSha1, 20)
+  let params = kids[1].derChildren()
+  if params.len > 4:
+    pdfFail("RSASSA-PSS parameters are malformed")
+  result = (rsaAlgo.rhSha1, 20)
+  var mgfHash = oidContent([1, 3, 14, 3, 2, 26]) # MGF1-SHA1 default
+  var hasMgf = false
+  for p in params:
+    if p.tag != 0xA0 and p.tag != 0xA1 and p.tag != 0xA2 and
+        p.tag != 0xA3:
+      pdfFail("RSASSA-PSS parameter is not [0..3]")
+    let inner = p.derChildren()
+    if inner.len != 1:
+      pdfFail("RSASSA-PSS parameter wraps one value")
+    case p.tag
+    of 0xA0:
+      if inner[0].tag != 0x30:
+        pdfFail("PSS hashAlgorithm is not a SEQUENCE")
+      let hk = inner[0].derChildren()
+      if hk.len == 0 or hk[0].tag != 0x06:
+        pdfFail("PSS hashAlgorithm has no OID")
+      if hk[0].content == oidContent([2, 16, 840, 1, 101, 3, 4, 2, 1]):
+        result.h = rsaAlgo.rhSha256
+      elif hk[0].content ==
+          oidContent([2, 16, 840, 1, 101, 3, 4, 2, 2]):
+        result.h = rsaAlgo.rhSha384
+      elif hk[0].content ==
+          oidContent([2, 16, 840, 1, 101, 3, 4, 2, 3]):
+        result.h = rsaAlgo.rhSha512
+      elif hk[0].content == oidContent([1, 3, 14, 3, 2, 26]):
+        result.h = rsaAlgo.rhSha1
+      else:
+        pdfFail("unsupported PSS hash")
+    of 0xA1:
+      if inner[0].tag != 0x30:
+        pdfFail("PSS maskGenAlgorithm is not a SEQUENCE")
+      let mk = inner[0].derChildren()
+      if mk.len != 2 or mk[0].tag != 0x06 or
+          mk[0].content != oidContent([1, 2, 840, 113549, 1, 1, 8]):
+        pdfFail("PSS mask generation is not MGF1")
+      if mk[1].tag != 0x06:
+        pdfFail("PSS MGF1 parameters hold no hash OID")
+      mgfHash = mk[1].content
+      hasMgf = true
+    of 0xA2:
+      if inner[0].tag != 0x02:
+        pdfFail("PSS saltLength is not an INTEGER")
+      var v = 0
+      for c in intMagnitude(inner[0].content):
+        v = v * 256 + int(byte(c))
+      result.saltLen = v
+    else:
+      if inner[0].tag != 0x02:
+        pdfFail("PSS trailerField is not an INTEGER")
+      if intMagnitude(inner[0].content) != "\x01":
+        pdfFail("PSS trailerField is not 1")
+  # MGF1 must use the message hash: nimcypher's verifier pairs them.
+  let wantMgf =
+    case result.h
+    of rsaAlgo.rhSha256: oidContent([2, 16, 840, 1, 101, 3, 4, 2, 1])
+    of rsaAlgo.rhSha384: oidContent([2, 16, 840, 1, 101, 3, 4, 2, 2])
+    of rsaAlgo.rhSha512: oidContent([2, 16, 840, 1, 101, 3, 4, 2, 3])
+    of rsaAlgo.rhSha1: oidContent([1, 3, 14, 3, 2, 26])
+  if hasMgf and mgfHash != wantMgf:
+    pdfFail("PSS MGF1 hash differs from the message hash")
+
+proc derSigToRaw*(sigDer: string, coordLen: int): seq[byte] =
   ## ECDSA CMS signatures are DER SEQ{INTEGER r, INTEGER s}; nimcypher
   ## verifies raw R||S. Minimal-encoding violations fail loudly.
   let kids = getSeq(sigDer, "ECDSA signature")
@@ -618,11 +702,22 @@ proc verifyCertSignature*(tbs, sigValue, sigAlgDer: string,
   ## `sigValue` is the BIT STRING content (without unused-bits octet).
   ## Returns ok=false on cryptographic mismatch (never raises for bad
   ## math); structural problems and unknown algorithms raise PdfError.
-  ## `weak` is true for SHA-1 (still verified).
+  ## `weak` is true for SHA-1 (still verified). RSASSA-PSS verifies
+  ## when its salt length equals the digest length (nimcypher pairs
+  ## them); anything else fails loudly as unsupported.
   let algKids = getSeq(sigAlgDer, "signatureAlgorithm")
   if algKids.len == 0 or algKids[0].tag != 0x06:
     pdfFail("signatureAlgorithm has no OID")
   let oid = algKids[0].content
+  if oid == oidContent([1, 2, 840, 113549, 1, 1, 10]):
+    if not issuerSpki.isRsa:
+      pdfFail("PSS signature with a non-RSA issuer key")
+    let (h, saltLen) = parseRsaPssParams(sigAlgDer)
+    if saltLen != hashLenOf(h):
+      pdfFail("PSS salt length is not the digest length")
+    let pub = rsaPublicKeyFromSpki(issuerSpki)
+    return (rsaAlgo.pssVerify(pub, h, toBytes(tbs),
+      toBytes(sigValue)), h == rsaAlgo.rhSha1)
   if algKids.len > 1:
     let p = algKids[1]
     if p.tag != 0x05 or p.content.len != 0:
@@ -658,13 +753,24 @@ proc verifyCertSignature*(tbs, sigValue, sigAlgDer: string,
     (rsaAlgo.pkcs1v15Verify(pub, h, toBytes(tbs), toBytes(sigValue)),
       weak)
 
+proc oidContentOf*(dotted: string): string =
+  ## Dotted-decimal OID ("1.2.840...") to content bytes.
+  var arcs: seq[int] = @[]
+  for part in dotted.split('.'):
+    try:
+      arcs.add(parseInt(part))
+    except ValueError:
+      pdfFail("bad OID arc '" & part & "'")
+  oidContent(arcs)
+
 proc checkChain*(chain: seq[Cert], trust: seq[Cert],
-    at: DateTime): seq[string] =
+    at: DateTime, eku = "1.3.6.1.5.5.7.3.3"): seq[string] =
   ## Empty means valid; else human-readable reasons. Walks leaf to
   ## anchor: Name match (multiset), validity window, CA/keyUsage
-  ## constraints with pathLen, per-link signature verify. EKU without
-  ## codeSigning on the leaf is a reason; weak digests are NOT reasons
-  ## here (see verifySignature warnings).
+  ## constraints with pathLen, per-link signature verify. A present
+  ## leaf EKU without `eku` (codeSigning by default, timeStamping for
+  ## TSA tokens) is a reason; weak digests are NOT reasons here (see
+  ## verifySignature warnings).
   if chain.len == 0:
     pdfFail("certificate chain is empty")
   var path = chain
@@ -738,8 +844,8 @@ proc checkChain*(chain: seq[Cert], trust: seq[Cert],
   if leaf.eku.len > 0:
     var ok = false
     for e in leaf.eku:
-      if e == oidContent([1, 3, 6, 1, 5, 5, 7, 3, 3]):
+      if e == oidContentOf(eku):
         ok = true
     if not ok:
-      return @["leaf lacks the codeSigning EKU"]
+      return @["leaf lacks the expected EKU"]
   @[]

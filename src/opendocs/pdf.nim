@@ -82,9 +82,21 @@ export FieldKind, FieldOption, FieldWidget, FormField,
   flattenFields
 
 from pdf/sign import DocSignature, SigDraft, docSignatures,
-  verifyByteRangeHash, addSignaturePlaceholder
+  verifyByteRangeHash, addSignaturePlaceholder, Signer, SignKey,
+  VerifyResult, TsaClient, CmsSigned, loadSignerKey, certDerOf,
+  buildCms, coveredBytes, gapContents, fillPlaceholder, draftSubFilter,
+  signPlaceholder, signPlaceholderCades, parseCms, verifySignature,
+  hashBytes, cmsDigestOid, hexEncode, hexDecode, buildTimestampReq,
+  parseTimestampResp, verifyTimestampToken, requestTimestamp,
+  embedTimestamp, embedDssCerts, refreshMDate, fillContentsHex
 export DocSignature, SigDraft, docSignatures,
-  verifyByteRangeHash, addSignaturePlaceholder
+  verifyByteRangeHash, addSignaturePlaceholder, Signer, SignKey,
+  VerifyResult, TsaClient, CmsSigned, loadSignerKey, certDerOf,
+  buildCms, coveredBytes, gapContents, fillPlaceholder, draftSubFilter,
+  signPlaceholder, signPlaceholderCades, parseCms, verifySignature,
+  hashBytes, cmsDigestOid, hexEncode, hexDecode, buildTimestampReq,
+  parseTimestampResp, verifyTimestampToken, requestTimestamp,
+  embedTimestamp, embedDssCerts, refreshMDate, fillContentsHex
 
 from pdf/catalog import PdfDate, PdfInfo, parsePdfDate, docInfo, xmpField,
   decodeTextString
@@ -119,10 +131,14 @@ export DerTag, DerNode, derLen, derTlv, derInt,
 
 from pdf/cert import CertName, Validity, Spki, Cert, pemToDer,
   parseDerTime, namesMatch, parseCert, rsaPublicKeyFromSpki,
-  ecPublicKeyFromSpki, verifyCertSignature, certLabel, checkChain
+  ecPublicKeyFromSpki, verifyCertSignature, certLabel, checkChain,
+  ecCurveOf, intMagnitude, getSeq, derSigToRaw, parseRsaPssParams,
+  hashLenOf, oidContentOf
 export CertName, Validity, Spki, Cert, pemToDer,
   parseDerTime, namesMatch, parseCert, rsaPublicKeyFromSpki,
-  ecPublicKeyFromSpki, verifyCertSignature, certLabel, checkChain
+  ecPublicKeyFromSpki, verifyCertSignature, certLabel, checkChain,
+  ecCurveOf, intMagnitude, getSeq, derSigToRaw, parseRsaPssParams,
+  hashLenOf, oidContentOf
 
 from pdf/xfdf import exportXfdf, importXfdf
 export exportXfdf, importXfdf
@@ -136,6 +152,9 @@ from pdf/optimize import OptimizeOptions, OptimizeStats,
   defaultOptimizeOptions, checkOptimizeOptions, spaceAudit, optimizePdf
 export OptimizeOptions, OptimizeStats,
   defaultOptimizeOptions, checkOptimizeOptions, spaceAudit, optimizePdf
+
+from pdf/render import hasPdftoppm, renderPagePreview
+export hasPdftoppm, renderPagePreview
 
 from pdf/layers import PdfLayer, docLayers, layerOCGs
 export PdfLayer, docLayers, layerOCGs
