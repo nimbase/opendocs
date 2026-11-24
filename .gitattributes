@@ -9,3 +9,4 @@ tests/data/fonts/*.ttf binary
 tests/data/fonts/*.otf binary
 tests/fixtures/**/*.docx binary
 tests/fixtures/**/*.xlsx binary
+tests/data/pdf/sign/*.der binary

@@ -106,6 +106,24 @@ export PdfAnnot, readAnnot, pageAnnots, docAnnots
 from pdf/structread import PdfStructElem, structTree
 export PdfStructElem, structTree
 
+from pdf/der import DerTag, DerNode, derLen, derTlv, derInt,
+  derIntBytes, derOid, derOidContent, derBitString, derOctetString,
+  derNull, derBool, derUtf8, derPrintable, derIa5, derSeq, derSet,
+  derContext, derExplicit, derUtcTime, derGeneralizedTime, derRead,
+  derChildren, derParse
+export DerTag, DerNode, derLen, derTlv, derInt,
+  derIntBytes, derOid, derOidContent, derBitString, derOctetString,
+  derNull, derBool, derUtf8, derPrintable, derIa5, derSeq, derSet,
+  derContext, derExplicit, derUtcTime, derGeneralizedTime, derRead,
+  derChildren, derParse
+
+from pdf/cert import CertName, Validity, Spki, Cert, pemToDer,
+  parseDerTime, namesMatch, parseCert, rsaPublicKeyFromSpki,
+  ecPublicKeyFromSpki, verifyCertSignature, certLabel, checkChain
+export CertName, Validity, Spki, Cert, pemToDer,
+  parseDerTime, namesMatch, parseCert, rsaPublicKeyFromSpki,
+  ecPublicKeyFromSpki, verifyCertSignature, certLabel, checkChain
+
 from pdf/xfdf import exportXfdf, importXfdf
 export exportXfdf, importXfdf
 

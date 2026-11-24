@@ -271,3 +271,7 @@ proc derParse*(data: string): DerNode =
   result = derRead(data, pos)
   if pos != data.len:
     pdfFail("DER has trailing bytes after the top-level TLV")
+
+proc derOidContent*(arcs: openArray[int]): string =
+  ## OID value bytes (without tag/length) for byte comparisons.
+  derOid(arcs)[2 .. ^1]
