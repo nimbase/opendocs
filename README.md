@@ -29,7 +29,9 @@
   - Tables of contents, structured data tags, custom properties and custom XML
 - PDF read and write: parse, build, rewrite, and incremental update
   - Encryption RC4, AES-128, AES-256 (R2-R6)
-  - Signatures: list fields, check ByteRange digests, append unsigned placeholder shells
+  - Signatures: placeholders, detached PKCS#7/CAdES-BES signing,
+    full verification (digest, crypto, chain), RFC 3161 timestamps,
+    certificates-only DSS, page previews via poppler
   - Form filling (text, checkbox, radio, dropdown)
   - Form flattening (fields into page content)
   - Merge & Split (Combine or extract specific pages)
@@ -312,14 +314,14 @@ d.close()
 - [x] DOCX writer (full package assembly, model-identical round-trips, LibreOffice PDF acceptance)
 - [x] DOCX typed fields (complex + simple, all instruction kinds)
 - [x] DOCX tracked changes (run/body wrappers, marks, changes, ranges, rsids, accept-view text)
-- [x] PDF read/write (parse, build, encrypt, sign, fill, flatten, merge, extract, embed, incremental)
+- [x] PDF read/write (parse, build, encrypt, sign, verify, fill, flatten, merge, extract, embed, layers, XFDF, redact, optimize, incremental)
 - [ ] Legacy DOC read + write (binary Word format)
 - [ ] ODT read + write
 - [ ] RTF read + write
 - [ ] TXT read + write
 - [x] XLSX reader Phase A (lazy sheets, shared strings, raw values, A1 utils; xlsx/xlsm/xltx/xltm/xlam open flow)
 - [x] XLSX reader Phase B (eager styles, builtin formats, dates, 576-cell excelize oracle parity)
-- [ ] XLSX reader Phase C (rich text, hyperlinks, merges, dimensions, docProps)
+- [ ] XLSX reader Phase C (docProps remaining; rich text, hyperlinks, merges, dimensions, formulas done)
 - [ ] XLSX reader Phase D (read-only OLE for vbaProject.bin)
 - [ ] XLSX writer
 - [ ] PPTX read + write

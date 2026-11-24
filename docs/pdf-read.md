@@ -43,3 +43,18 @@ defer: m.close()
 - `gstate.nim`: `Matrix[6]`, `TextState`, `GState`, `WalkedOp`, `BBoxRect`, `initGState`, `applyOp` (q/Q/cm/BT/ET/Tm/Td/TD/T*/Tf/Tc/Tw/Tz/TL/Tr/Ts), `walkOps`, `pageDicts/pageResources/pageContentStream`, `walkPageOps`, `lookupXObject`, `walkNested` (Form `Do` expansion, per-invocation CTM, `/Matrix/BBox/Resources`, `maxNestedXObject`).
 
 Encrypted files: pass `password` to `openDoc/openPdf/readPdfBytes`. See `pdf-encryption.md`. `merge/write/forms/attach/sign` reject encrypted inputs.
+
+## Layers (`pdf/layers.nim`)
+
+Read-only report, never applied (flattening needs a renderer).
+
+- `PdfLayer(name, on, intent, usage)` — `/OCGs` + `/D`. `/VE`-free `/OCMD` returned as expression string; `/JS` never evaluated.
+- `docLayers(d): seq[PdfLayer]`, `layerOCGs(d): seq[(name, objNum)]`.
+- Bounds: `maxOutlineItems` + `maxWalkDepth`; cycles fail loudly naming the object.
+
+## Page previews (`pdf/render.nim`)
+
+Phase-0 harness, honestly named: poppler renders, not opendocs.
+
+- `hasPdftoppm(): bool` — capability probe.
+- `renderPagePreview(data, page = 0, dpi = 150.0, password = ""): string` — PNG bytes via `pdftoppm`. Tool absence, non-zero exits and empty output fail loudly; temp files removed. Password travels on the command line (visible to process listings on multi-user machines).

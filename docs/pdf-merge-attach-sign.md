@@ -36,7 +36,7 @@ writeFile("with-attach.pdf", b.buildPdf())
 
 See `examples/example_pdf_attach.nim`, `tests/t_pdf_attach.nim`.
 
-## Signatures (`pdf/sign.nim`)
+## Signatures (`pdf/sign.nim`, `pdf/der.nim`, `pdf/cert.nim`)
 
 ```nim
 import opendocs/pdf
@@ -46,11 +46,24 @@ for s in docSignatures(d):
   echo s.field, " signed=", s.signed, " ", s.byteRange
   echo verifyByteRangeHash(readFile("signed.pdf"), s)
 
+# External signing: reserve a shell, fill it with CMS from any signer.
 let draft = addSignaturePlaceholder(readFile("a.pdf"), "Sig1", 8192)
-# write draft.file, sign externally, patch contentsAt..contentsAt+contentsLen
+# write draft.file, sign coveredBytes(draft.file, draft.byteRange) externally,
+# fillPlaceholder(draft, cmsDer)
+
+# In-repo signing: PKCS#8/PKCS#1/SEC1 key + leaf-first chain (PKCS#12 declined).
+let signer = Signer(keyPem: readFile("leaf.key"),
+  certChain: @[readFile("leaf.cert.pem")], digest: "")
+let signed = signPlaceholder(draft, signer) # or signPlaceholderCades
+let r = verifySignature(signed.file, "Sig1", @[readFile("ca.cert.der")])
+echo r.valid, " ", r.errors # digestOk/sigOk/chainOk, warnings for sha1
 ```
 
-- `DocSignature(field, filter, subFilter, byteRange[4], hasByteRange, contents, signed, reason, location, contact, signDate)`, `SigDraft(file, field, byteRange, contentsAt, contentsLen)`.
-- `docSignatures(d)`, `verifyByteRangeHash(data, sig): hex SHA-256` (`r1+r2` ranges), `addSignaturePlaceholder(base, fieldName, size): SigDraft` (incremental `/Sig/Adobe.PPKLite/adbe.pkcs7.detached`, zeroed `/Contents` hex, patched `/ByteRange`, invisible field, joins/creates `/AcroForm`).
+- `DocSignature(field, filter, subFilter, byteRange[4], hasByteRange, contents, signed, reason, location, contact, signDate)`, `SigDraft(file, field, byteRange, contentsAt, contentsLen, baseLen)`.
+- `docSignatures(d)`, `verifyByteRangeHash(data, sig): hex SHA-256`, `addSignaturePlaceholder(base, fieldName, size, reason, location, contact, subFilter)` (incremental `/Sig/Adobe.PPKLite/adbe.pkcs7.detached` or `ETSI.CAdES.detached`, zeroed `/Contents` hex, patched `/ByteRange`, invisible field, joins/creates `/AcroForm`).
+- `buildCms(signer, msg, cades)`, `parseCms(cmsDer)`, `verifySignature(data, field, trust, password)` — collects every failure (digest vs `messageDigest`, crypto, chain to trust) instead of short-circuiting. `valid` needs all three. RSASSA-PSS verifies when salt length equals digest length; EdDSA/DSA fail loudly.
+- Correctness note: the signature input is the SignedAttributes SET OF encoding (RFC 5652 5.4), found by differential testing against openssl. Interop is bidirectional: our CMS verifies under `openssl cms -verify`; openssl's CMS (incl. its S/MIME capabilities and `rsaEncryption`-OID sigAlg form) verifies under us.
+- Timestamps (P6): `buildTimestampReq`, `parseTimestampResp`, `verifyTimestampToken`, `requestTimestamp` (HTTP stays behind the caller `TsaClient` callback), `embedTimestamp` (unsigned `signature-time-stamp` attribute via incremental update; the original signature still verifies).
+- DSS (P7): `embedDssCerts` carries validation certificates only (transport, not LTV: no OCSP/CRL revocation data, so never presented as long-term validation).
 
-See `examples/example_pdf_sign.nim`, `tests/t_pdf_sign.nim`.
+See `examples/example_pdf_sign.nim`, `tests/t_pdf_sign.nim`, `t_pdf_signp4b.nim`, `t_pdf_tspdss.nim`, `t_pdf_cert.nim`, `t_pdf_der.nim`.

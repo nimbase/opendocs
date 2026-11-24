@@ -57,3 +57,15 @@ writeFile("hello-v2.pdf", u.finishUpdate())
 - `beginUpdate(base)`, `addObject(u, ...)`, `updateObject(num, body)`, `finishUpdate` — append without rewriting, new objects + xref with `/Prev`.
 
 Covers `tests/t_pdf_write.nim`, `t_pdf_docwrite.nim`, `examples/example_pdf*.nim`.
+
+## Organize (`pdf/organize.nim`)
+
+- `setPageRotation(u, page, degrees)` — normalizes to 0/90/180/270, else `PdfError`.
+- `setPageBox(u, page, box, rect)` — `MediaBox/CropBox/TrimBox/BleedBox/ArtBox`. Missing `MediaBox` fails on write, never inherits-guess.
+- `deletePages(b, keep)`, `appendPages(b, src, pages)` — dest rewiring with page refs remapped, unresolvable kept with `pageIndex -1`.
+- `addOutline(b, title, targetPage, parent)`, `setPageLabels(b, labels)`, `addLink/addInternalLink/addTextAnnot` — no `/AP` synthesis (needs renderer); read back via `pageAnnots`.
+
+## Optimize (`pdf/optimize.nim`)
+
+- `optimizePdf(data, opts)` — image downsample/recompress via `imgpipe.nim`, object-stream cleanup, duplicate-stream dedupe. Per-image skip-and-count (masks, decode failures). Determinism preserved.
+- `spaceAudit(d): seq[(kind, bytes)]` — sums to file size within framing.

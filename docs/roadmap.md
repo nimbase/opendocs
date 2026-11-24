@@ -11,8 +11,14 @@ Done:
 - DOCX tracked changes (run/body wrappers, marks, changes, ranges, rsids, accept-view text)
 - PDF read/write (parse, build, rewrite, incremental update)
 - Encryption RC4, AES-128, AES-256 (R2-R6)
-- Signatures: list fields, check ByteRange digests, append unsigned placeholder shells
-- Form filling/flattening, merge/split, attachments, text extraction with position, font embedding with subsetting, images, incremental saves
+- Signatures: placeholders, detached PKCS#7/CAdES-BES signing, full
+  verification (digest, crypto, chain to trust), RFC 3161 timestamps,
+  certificates-only DSS (transport, not LTV), page previews via poppler
+- Form filling/flattening, XFDF export/import, merge/split, attachments,
+  text extraction with position, font embedding with subsetting, images,
+  page organize (rotate/boxes/delete/append), outline/label/annot drafts,
+  redact mark/apply/verify, image optimize with space audit,
+  incremental saves
 - XLSX Phase A (lazy sheets, shared strings, raw values, A1 utils; xlsx/xlsm/xltx/xltm/xlam open flow)
 - XLSX Phase B (eager styles, builtin formats, dates, 576-cell excelize oracle parity)
 - DOCX high-level builder, accept/reject revisions API
@@ -23,7 +29,7 @@ Todo:
 - ODT read + write
 - RTF read + write
 - TXT read + write
-- XLSX Phase C (rich text done, hyperlinks, merges, dimensions, docProps remaining)
+- XLSX Phase C (docProps remaining; rich text, hyperlinks, merges, dimensions, formulas done)
 - XLSX Phase D (read-only OLE for `vbaProject.bin`)
 - XLSX writer
 - PPTX read + write
@@ -35,5 +41,5 @@ Todo:
 - `XlsxMaxRows = 1048576`, `XlsxMaxCols = 16384`.
 - Strict XML: mismatched tags -> `DocxError`/`XlsxError`. Corrupt packages name the offending part.
 - Encrypted PDFs need password; merge/write/forms/attach/sign reject encrypted inputs. Encrypted XLSX OLE rejected safely.
-- JPX/CCITT/JBIG2 images fail decode (reported, not guessed). Lab/Pattern color spaces fail. `R5` encryption and non-`Standard` filters rejected.
+- JPX and CCITT G3-1D/G4 images decode (pure Nim); JBIG2 passes through, CCITT K>0 fails. Lab/Pattern color spaces fail. `R5` encryption and non-`Standard` filters rejected.
 - Unmapped CJK codes stay U+FFFD, never guessed.
