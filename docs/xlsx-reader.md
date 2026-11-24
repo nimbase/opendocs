@@ -1,8 +1,8 @@
 # XLSX Reader
 
-Entry: `src/opendocs/xlsx.nim` includes `xlsx/types, base, cell, styles, numfmttok, numfmt, workbook, sharedstrings, sheet, richtext, reader`. Single canonical home `opendocs/xlsx`.
+Entry: `src/opendocs/xlsx.nim` includes `xlsx/types, base, cell, styles, numfmttok, numfmt, workbook, sharedstrings, sheet, richtext, docprops, emit, write, reader`. Single canonical home `opendocs/xlsx`.
 
-Supported: xlsx, xlsm, xltx, xltm, xlam. Phase A (lazy sheets, shared strings, raw values, A1 utils, open flow) done. Phase B (eager styles, builtin formats, dates, 576-cell excelize oracle parity) done. Phase C done (rich text, hyperlinks, merges, dimensions, shared + normal formulas, defined names, docProps). Phase D OLE read-only guard, writer not yet.
+Supported: xlsx, xlsm, xltx, xltm, xlam. Phase A (lazy sheets, shared strings, raw values, A1 utils, open flow) done. Phase B (eager styles, builtin formats, dates, 576-cell excelize oracle parity) done. Phase C done (rich text, hyperlinks, merges, dimensions, shared + normal formulas, defined names, docProps). Phase D OLE read-only guard. Writer W1 done (fresh build, all five cell types; see `xlsx-writer.md`).
 
 ```nim
 import opendocs/xlsx

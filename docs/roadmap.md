@@ -30,8 +30,9 @@ Todo:
 - RTF read + write
 - TXT read + write
 - XLSX Phase C done (rich text, hyperlinks, merges, dimensions, formulas, docProps)
+- XLSX writer W1 done (fresh build, all five cell types, SST dedupe, spill-to-disk, carry-through)
 - XLSX Phase D (read-only OLE for `vbaProject.bin`)
-- XLSX writer
+- XLSX writer W2+ (sheet extras, styles, open-edit)
 - PPTX read + write
 
 ## Limits and errors

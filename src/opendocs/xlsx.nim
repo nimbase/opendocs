@@ -5,22 +5,27 @@
 ## SPDX-License-Identifier: MIT AND BSD-3-Clause
 ##
 ## Spreadsheet `.xlsx`/`.xlsm`/`.xltx`/`.xltm`/`.xlam` (OOXML
-## SpreadsheetML) reader.
+## SpreadsheetML) reader and writer.
 ##
 ## Lazy like excelize: `openXlsx` maps the workbook and sheet parts;
 ## sheets and shared strings parse on first getter access. Phase A
 ## exposes raw values + types; number formatting lands in Phase B.
+## The writer (`newXlsxDoc` + `setCell*` + `saveXlsx`) owns a separate
+## builder model (DOCX-style); see `xlsx/write`.
 
-import std/[strutils, tables, os, tempfiles]
+import std/[strutils, tables, os, tempfiles, times, memfiles, math, algorithm]
+import buffalo
 import openparser/colors
 import openparser/xml
 import opendocs/zip
 
 # Implementation split: model, shared helpers, cell refs, stylesheet,
 # number/date formatting, workbook, shared strings, sheets, rich text,
-# and the open flow live in `xlsx/` but are included here, so module
-# `xlsx` keeps one canonical home for every symbol. Order matters:
-# helpers before part readers, open flow last.
+# docProps, writer emit + builder, and the open flow live in `xlsx/`
+# but are included here, so module `xlsx` keeps one canonical home for
+# every symbol. Order matters: helpers before part readers, writer
+# after the reader model (it reuses cell refs, date mapping and
+# docProps types), open flow last.
 include xlsx/types
 include xlsx/base
 include xlsx/cell
@@ -35,4 +40,6 @@ include xlsx/sharedstrings
 include xlsx/sheet
 include xlsx/richtext
 include xlsx/docprops
+include xlsx/emit
+include xlsx/write
 include xlsx/reader

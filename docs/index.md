@@ -4,7 +4,7 @@ Document readers and writers for Nim: DOCX, PDF, XLSX, plus a shared ZIP package
 
 - Read and write DOCX programmatically (`opendocs/docx`)
 - Read and write PDF: parse, build, rewrite, incremental update (`opendocs/pdf`)
-- Read XLSX, XLSM, XLTX, XLTM, XLAM (`opendocs/xlsx`)
+- Read and write XLSX, XLSM, XLTX, XLTM, XLAM (`opendocs/xlsx`)
 - ZIP stored/deflated, writer, spill-to-disk (`opendocs/zip`)
 - Image export via `image` package (`opendocs/exports`)
 

@@ -322,8 +322,9 @@ d.close()
 - [x] XLSX reader Phase A (lazy sheets, shared strings, raw values, A1 utils; xlsx/xlsm/xltx/xltm/xlam open flow)
 - [x] XLSX reader Phase B (eager styles, builtin formats, dates, 576-cell excelize oracle parity)
 - [x] XLSX reader Phase C (rich text, hyperlinks, merges, dimensions, formulas, docProps)
+- [x] XLSX writer W1 (fresh build, all five cell types, SST dedupe, spill-to-disk, carry-through)
 - [ ] XLSX reader Phase D (read-only OLE for vbaProject.bin)
-- [ ] XLSX writer
+- [ ] XLSX writer W2+ (sheet extras, styles, open-edit)
 - [ ] PPTX read + write
 - [x] DOCX high-level builder API (compose documents without touching the model)
 - [x] DOCX accept/reject revisions API
