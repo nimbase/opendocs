@@ -324,6 +324,7 @@ d.close()
 - [x] XLSX reader Phase C (rich text, hyperlinks, merges, dimensions, formulas, docProps)
 - [x] XLSX writer W1 (fresh build, all five cell types, SST dedupe, spill-to-disk, carry-through)
 - [x] XLSX writer W2 (merges, column/row geometry, hyperlinks + sheet rels, defined names)
+- [x] XLSX writer W3 (cell styles, builtin + custom number formats, theme part)
 - [ ] XLSX reader Phase D (read-only OLE for vbaProject.bin)
 - [ ] XLSX writer W3+ (styles, open-edit)
 - [ ] PPTX read + write

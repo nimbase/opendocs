@@ -32,6 +32,7 @@ Todo:
 - XLSX Phase C done (rich text, hyperlinks, merges, dimensions, formulas, docProps)
 - XLSX writer W1 done (fresh build, all five cell types, SST dedupe, spill-to-disk, carry-through)
 - XLSX writer W2 done (merges, column/row geometry, hyperlinks + sheet rels, defined names)
+- XLSX writer W3 done (cell styles, builtin + custom number formats, theme part)
 - XLSX Phase D (read-only OLE for `vbaProject.bin`)
 - XLSX writer W3+ (styles, open-edit)
 - PPTX read + write

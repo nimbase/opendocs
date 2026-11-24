@@ -37,10 +37,11 @@
 ##   caller bugs, so this fails instead (documented in `setCellDate`).
 ## - NaN/Inf floats store as shared strings ("NaN", "Inf", "-Inf"),
 ##   matching excelize `SetCellFloat` (which delegates to `SetCellStr`).
-## - No theme part in W1. excelize ships a full `theme1.xml`; the reader
-##   treats a missing theme as "no color" and every consumer opens
-##   theme-less workbooks, so the part is omitted until styles (W3) need
-##   real theme slots. Content types and rels are consistent with the
+## - Minimal theme part ships on every save (same Office palette and
+##   minimal `fmtScheme`/`fontScheme` shape as the docx writer). The
+##   reader resolves all style colors through the theme (a missing theme
+##   means no color at all), so conditional emission would silently drop
+##   style colors on style-free saves that later gain raw-part styles. Content types and rels are consistent with the
 ##   omission.
 ## - Zip entry timestamps come from `opendocs/zip` (`now().utc()`), so
 ##   two saves of the same model differ byte-wise. Round-trip tests
@@ -71,6 +72,7 @@ type
   XlsxWCell* = object
     ## One builder cell. `styleIdx` is reserved for W3 styles; W1 always
     ## writes 0 (the single default xf).
+    styleIdx*: int ## `cellXfs` index, 0 = unstyled default
     case kind*: XlsxCellKind
     of wckString: strVal*: string
     of wckNumber: numRaw*: string ## preformatted (`$int` exact, floats 15-digit)
@@ -102,6 +104,23 @@ type
     spillCapBytes*: int
     spillDir*: string ## parent for the spill dir ("" = system temp dir)
 
+  XlsxCellStyle* = object
+    ## Style input for `addStyle` (W3). Component types reuse the reader
+    ## model so round-trips compare equal through `getCellStyle`. Only
+    ## pattern fills are supported; gradient fills fail loudly in
+    ## `addStyle` (unmodeled output would silently degrade).
+    numFmtCode*: string ## "" = General (builtin id 0)
+    hasFont*: bool
+    font*: XlsxFont
+    hasFill*: bool
+    fill*: XlsxFill
+    hasBorder*: bool
+    border*: XlsxBorder
+    hasAlignment*: bool
+    alignment*: XlsxAlignment
+    hasProtection*: bool
+    protection*: XlsxProtection
+
   XlsxDoc* = object
     ## Owned workbook model (DOCX `DocxDocument` analogue).
     sheets*: seq[XlsxWSheet]
@@ -114,6 +133,12 @@ type
     appCompany*: string
     customProps*: Table[string, string]
     definedNames*: seq[XlsxDefinedName]
+    styleFonts*: seq[XlsxFont] ## index 0 = blank-template default
+    styleFills*: seq[XlsxFill] ## 0 = none, 1 = gray125 (template parity)
+    styleBorders*: seq[XlsxBorder] ## index 0 = empty (template parity)
+    styleNumFmtIds*: Table[string, int] ## custom code -> id (>= 164)
+    styleNumFmtOrder*: seq[string] ## custom codes in allocation order
+    styleXfs*: seq[XlsxXf] ## index 0 = default; added styles never dedupe to 0
     rawParts*: Table[string, seq[byte]] ## unmodeled carry-through (W4)
 
 const
@@ -267,12 +292,24 @@ proc newXlsxDoc*(date1904 = false): XlsxDoc =
     sheetIdx: initTable[string, int](),
     sstIndex: initTable[string, int](),
     customProps: initTable[string, string](),
+    styleNumFmtIds: initTable[string, int](),
     rawParts: initTable[string, seq[byte]]())
   result.sheets.add XlsxWSheet(name: "Sheet1", sheetId: 1,
     cells: initTable[int, XlsxWCell](),
     rowHeights: initTable[int, float](),
     rowHidden: initTable[int, bool]())
   result.sheetIdx["sheet1"] = 0
+  # Blank-template style seeds (excelize `templateStyles` parity): one
+  # Calibri-11 font, none + gray125 fills, one empty border, one default
+  # xf. `addStyle` appends past these, so style-free saves keep the W1
+  # shape byte-identical.
+  result.styleFonts.add XlsxFont(name: "Calibri", size: 11.0, family: 2,
+    hasFamily: true)
+  result.styleFills.add XlsxFill(kind: "pattern", pattern: "none")
+  result.styleFills.add XlsxFill(kind: "pattern", pattern: "gray125")
+  result.styleBorders.add XlsxBorder()
+  result.styleXfs.add XlsxXf(numFmtId: 0, fontId: 0, fillId: 0,
+    borderId: 0, xfId: 0)
 
 proc sheetIndex(doc: XlsxDoc, sheet: string): int =
   let key = sheet.toLowerAscii()
@@ -514,6 +551,142 @@ proc addDefinedName*(doc: var XlsxDoc, name, refersTo: string,
   doc.definedNames.add XlsxDefinedName(name: name, refersTo: target,
     scope: canonScope, hidden: hidden, comment: comment)
 
+# ------------------------------------------------------- W3: styles
+
+func builtinNumFmtId(code: string): int =
+  ## Builtin format-code id, or -1 when custom. First code wins (codes
+  ## are unique across the builtin table in practice).
+  for id in 0 .. 200:
+    if builtinFmtCode(id) == code: return id
+  -1
+
+func colorToHex(c: Color): string =
+  ## Resolved color to `RRGGBB` (opaque) or `AARRGGBB` (translucent).
+  ## Caller guarantees `c.valid`.
+  let r = max(0, min(255, int(c.r * 255.0 + 0.5)))
+  let g = max(0, min(255, int(c.g * 255.0 + 0.5)))
+  let b = max(0, min(255, int(c.b * 255.0 + 0.5)))
+  if c.a >= 1.0:
+    result = toHex(r, 2) & toHex(g, 2) & toHex(b, 2)
+  else:
+    let a = max(0, min(255, int(c.a * 255.0 + 0.5)))
+    result = toHex(a, 2) & toHex(r, 2) & toHex(g, 2) & toHex(b, 2)
+
+proc numFmtIdFor(doc: var XlsxDoc, code: string): int =
+  ## Custom codes allocate ids from 164 up, deduped by code string.
+  if code == "": return 0
+  let builtin = builtinNumFmtId(code)
+  if builtin >= 0: return builtin
+  if doc.styleNumFmtIds.hasKey(code):
+    return doc.styleNumFmtIds[code]
+  result = 164 + doc.styleNumFmtOrder.len
+  doc.styleNumFmtIds[code] = result
+  doc.styleNumFmtOrder.add code
+
+proc addStyle*(doc: var XlsxDoc, s: XlsxCellStyle): int =
+  ## Intern a cell style, returning its `cellXfs` index (>= 1; index 0
+  ## stays reserved for unstyled cells, so even an empty style yields a
+  ## nonzero index and formatted views like TRUE/FALSE apply).
+  ## Component tables dedupe structurally (including against the seeded
+  ## defaults); `cellXfs` records dedupe among appended entries only.
+  ## Gradient fills fail loudly (no emitter).
+  if s.hasFill and s.fill.kind == "gradient":
+    raise newException(XlsxError, "gradient fills are not supported")
+  let numFmtId = doc.numFmtIdFor(s.numFmtCode)
+  var fontId = -1
+  if s.hasFont:
+    let at = doc.styleFonts.find(s.font)
+    if at >= 0: fontId = at
+    else:
+      fontId = doc.styleFonts.len
+      doc.styleFonts.add s.font
+  var fillId = -1
+  if s.hasFill:
+    let at = doc.styleFills.find(s.fill)
+    if at >= 0: fillId = at
+    else:
+      fillId = doc.styleFills.len
+      doc.styleFills.add s.fill
+  var borderId = -1
+  if s.hasBorder:
+    let at = doc.styleBorders.find(s.border)
+    if at >= 0: borderId = at
+    else:
+      borderId = doc.styleBorders.len
+      doc.styleBorders.add s.border
+  var xf = XlsxXf(numFmtId: numFmtId, fontId: fontId, fillId: fillId,
+    borderId: borderId, xfId: 0)
+  if s.numFmtCode != "":
+    xf.hasApplyNumberFormat = true
+    xf.applyNumberFormat = true
+  if s.hasFont:
+    xf.hasApplyFont = true
+    xf.applyFont = true
+  if s.hasFill:
+    xf.hasApplyFill = true
+    xf.applyFill = true
+  if s.hasBorder:
+    xf.hasApplyBorder = true
+    xf.applyBorder = true
+  if s.hasAlignment:
+    xf.hasApplyAlignment = true
+    xf.applyAlignment = true
+    xf.hasAlignment = true
+    xf.alignment = s.alignment
+  if s.hasProtection:
+    xf.hasApplyProtection = true
+    xf.applyProtection = true
+    xf.hasProtection = true
+    xf.protection = s.protection
+  for i in 1 ..< doc.styleXfs.len:
+    if doc.styleXfs[i] == xf: return i
+  result = doc.styleXfs.len
+  doc.styleXfs.add xf
+
+proc setCellStyle*(doc: var XlsxDoc, sheet, cellRef: string, idx: int) =
+  ## Assign a `cellXfs` index to an existing cell. Absent cells and
+  ## out-of-range indices fail loudly (style-first workflows set the
+  ## value, then the style).
+  if idx < 0 or idx >= doc.styleXfs.len:
+    raise newException(XlsxError,
+      "style index out of range: " & $idx)
+  let si = doc.sheetIndex(sheet)
+  let (col, row) = splitCellRef(cellRef)
+  let key = cellKey(col, row)
+  if not doc.sheets[si].cells.hasKey(key):
+    raise newException(XlsxError,
+      "no such cell for style: " & cellRef)
+  var cell = doc.sheets[si].cells[key]
+  cell.styleIdx = idx
+  doc.sheets[si].cells[key] = cell
+
+proc setRangeStyle*(doc: var XlsxDoc, sheet, fromRef, toRef: string,
+    idx: int) =
+  ## Assign a style to every existing cell in a rectangular range.
+  ## Missing cells fail loudly (no phantom cells are authored).
+  if idx < 0 or idx >= doc.styleXfs.len:
+    raise newException(XlsxError,
+      "style index out of range: " & $idx)
+  let si = doc.sheetIndex(sheet)
+  let (firstCol, firstRow) = splitCellRef(fromRef)
+  let (lastCol, lastRow) = splitCellRef(toRef)
+  let loCol = min(firstCol, lastCol)
+  let hiCol = max(firstCol, lastCol)
+  let loRow = min(firstRow, lastRow)
+  let hiRow = max(firstRow, lastRow)
+  for row in loRow .. hiRow:
+    for col in loCol .. hiCol:
+      let key = cellKey(col, row)
+      if not doc.sheets[si].cells.hasKey(key):
+        raise newException(XlsxError,
+          "no such cell for style: " & joinCellName(col, row))
+  for row in loRow .. hiRow:
+    for col in loCol .. hiCol:
+      let key = cellKey(col, row)
+      var cell = doc.sheets[si].cells[key]
+      cell.styleIdx = idx
+      doc.sheets[si].cells[key] = cell
+
 # ------------------------------------------------------------- serialization
 
 proc sheetBounds(s: XlsxWSheet): tuple[found: bool, minCol, minRow,
@@ -543,29 +716,31 @@ proc sheetBounds(s: XlsxWSheet): tuple[found: bool, minCol, minRow,
 proc writeCell(e: var XlsxEmit, doc: var XlsxDoc, col, row: int,
     cell: XlsxWCell) =
   let r = joinCellName(col, row)
+  var base = xlsxAttr("r", r)
+  if cell.styleIdx > 0: base.add xlsxAttr("s", $cell.styleIdx)
   case cell.kind
   of wckString:
     let idx = doc.internString(cell.strVal)
-    e.openTag("c", xlsxAttr("r", r) & xlsxAttr("t", "s"))
+    e.openTag("c", base & xlsxAttr("t", "s"))
     e.elemNode("v", $idx)
     e.closeTag("c")
   of wckNumber:
-    e.openTag("c", xlsxAttr("r", r))
+    e.openTag("c", base)
     e.elemNode("v", cell.numRaw)
     e.closeTag("c")
   of wckBool:
-    e.openTag("c", xlsxAttr("r", r) & xlsxAttr("t", "b"))
+    e.openTag("c", base & xlsxAttr("t", "b"))
     e.elemNode("v", if cell.boolVal: "1" else: "0")
     e.closeTag("c")
   of wckDate:
-    e.openTag("c", xlsxAttr("r", r))
+    e.openTag("c", base)
     e.elemNode("v", excelFloatStr(cell.dateSerial))
     e.closeTag("c")
   of wckFormula:
     if cell.cachedIsStr:
-      e.openTag("c", xlsxAttr("r", r) & xlsxAttr("t", "str"))
+      e.openTag("c", base & xlsxAttr("t", "str"))
     else:
-      e.openTag("c", xlsxAttr("r", r))
+      e.openTag("c", base)
     e.elemNode("f", cell.formula)
     if cell.cachedVal != "" or cell.cachedIsStr:
       e.elemNode("v", cell.cachedVal)
@@ -689,48 +864,158 @@ proc writeSharedStringsXml(e: var XlsxEmit, doc: XlsxDoc) =
     e.closeTag("si")
   e.closeTag("sst")
 
-proc writeStylesXml(e: var XlsxEmit) =
-  ## Minimal stylesheet: one font/fill/border/xf (the W1 default). Own
-  ## attribute order, same semantics as the excelize blank template.
+proc writeStyleFont(e: var XlsxEmit, ft: XlsxFont, isDefault: bool) =
+  ## One `fonts/font` element (reader `parseStyleFont` inverse). The
+  ## seeded default (index 0) keeps the blank-template `<color theme="1"/>`;
+  ## added fonts emit `rgb` when the resolved color is valid.
+  e.openTag("font")
+  if ft.size != 0.0: e.emptyTag("sz", xlsxAttr("val", $ft.size))
+  if isDefault:
+    e.emptyTag("color", xlsxAttr("theme", "1"))
+  elif ft.color.valid:
+    e.emptyTag("color", xlsxAttr("rgb", colorToHex(ft.color)))
+  if ft.name != "": e.emptyTag("name", xlsxAttr("val", ft.name))
+  if ft.hasCharset:
+    e.emptyTag("charset", xlsxAttr("val", $ft.charset))
+  if ft.hasFamily:
+    e.emptyTag("family", xlsxAttr("val", $ft.family))
+  if ft.bold: e.emptyTag("b")
+  if ft.italic: e.emptyTag("i")
+  if ft.strike: e.emptyTag("strike")
+  if ft.outline: e.emptyTag("outline")
+  if ft.shadow: e.emptyTag("shadow")
+  if ft.condense: e.emptyTag("condense")
+  if ft.extend: e.emptyTag("extend")
+  if ft.underline != "":
+    if ft.underline == "single": e.emptyTag("u")
+    else: e.emptyTag("u", xlsxAttr("val", ft.underline))
+  if ft.vertAlign != "":
+    e.emptyTag("vertAlign", xlsxAttr("val", ft.vertAlign))
+  if ft.scheme != "":
+    e.emptyTag("scheme", xlsxAttr("val", ft.scheme))
+  e.closeTag("font")
+
+proc writeStyleFill(e: var XlsxEmit, fl: XlsxFill) =
+  ## One `fills/fill` element (reader `parseStyleFill` inverse).
+  ## Gradient fills never reach here (`addStyle` rejects them); a
+  ## defensive failure keeps silent degradation impossible.
+  e.openTag("fill")
+  if fl.kind == "gradient":
+    raise newException(XlsxError, "gradient fills are not supported")
+  var attrs = xlsxAttr("patternType",
+    if fl.pattern != "": fl.pattern else: "none")
+  e.openTag("patternFill", attrs)
+  if fl.fgColor.valid:
+    e.emptyTag("fgColor", xlsxAttr("rgb", colorToHex(fl.fgColor)))
+  if fl.bgColor.valid:
+    e.emptyTag("bgColor", xlsxAttr("rgb", colorToHex(fl.bgColor)))
+  e.closeTag("patternFill")
+  e.closeTag("fill")
+
+proc writeBorderSide(e: var XlsxEmit, tag: string, s: XlsxBorderSide) =
+  if s.style == "":
+    e.emptyTag(tag)
+    return
+  e.openTag(tag, xlsxAttr("style", s.style))
+  if s.color.valid:
+    e.emptyTag("color", xlsxAttr("rgb", colorToHex(s.color)))
+  e.closeTag(tag)
+
+proc writeStyleBorder(e: var XlsxEmit, b: XlsxBorder) =
+  ## One `borders/border` element (reader `parseStyleBorder` inverse).
+  e.openTag("border")
+  e.writeBorderSide("left", b.left)
+  e.writeBorderSide("right", b.right)
+  e.writeBorderSide("top", b.top)
+  e.writeBorderSide("bottom", b.bottom)
+  e.writeBorderSide("diagonal", b.diagonal)
+  e.writeBorderSide("vertical", b.vertical)
+  e.writeBorderSide("horizontal", b.horizontal)
+  e.closeTag("border")
+
+proc writeXfAlignment(e: var XlsxEmit, a: XlsxAlignment) =
+  var attrs = ""
+  if a.horizontal != "": attrs.add xlsxAttr("horizontal", a.horizontal)
+  if a.vertical != "": attrs.add xlsxAttr("vertical", a.vertical)
+  if a.wrapText: attrs.add xlsxAttr("wrapText", "1")
+  if a.shrinkToFit: attrs.add xlsxAttr("shrinkToFit", "1")
+  if a.justifyLastLine: attrs.add xlsxAttr("justifyLastLine", "1")
+  if a.indent != 0: attrs.add xlsxAttr("indent", $a.indent)
+  if a.relativeIndent != 0:
+    attrs.add xlsxAttr("relativeIndent", $a.relativeIndent)
+  if a.readingOrder != 0:
+    attrs.add xlsxAttr("readingOrder", $a.readingOrder)
+  if a.textRotation != 0:
+    attrs.add xlsxAttr("textRotation", $a.textRotation)
+  e.emptyTag("alignment", attrs)
+
+proc writeXfProtection(e: var XlsxEmit, p: XlsxProtection) =
+  var attrs = ""
+  if p.hidden: attrs.add xlsxAttr("hidden", "1")
+  if p.locked: attrs.add xlsxAttr("locked", "1")
+  e.emptyTag("protection", attrs)
+
+proc writeStylesXml(e: var XlsxEmit, doc: XlsxDoc) =
+  ## Stylesheet from the builder tables. Style-free saves emit exactly
+  ## the W1 shape (seeded defaults only); added entries append past the
+  ## seeds so default indices stay stable.
   e.decl()
   e.openTag("styleSheet",
     xlsxAttr("xmlns",
       "http://schemas.openxmlformats.org/spreadsheetml/2006/main"))
-  e.openTag("fonts", xlsxAttr("count", "1"))
-  e.openTag("font")
-  e.emptyTag("sz", xlsxAttr("val", "11"))
-  e.emptyTag("color", xlsxAttr("theme", "1"))
-  e.emptyTag("name", xlsxAttr("val", "Calibri"))
-  e.emptyTag("family", xlsxAttr("val", "2"))
-  e.closeTag("font")
+  if doc.styleNumFmtOrder.len > 0:
+    e.openTag("numFmts", xlsxAttr("count", $doc.styleNumFmtOrder.len))
+    for code in doc.styleNumFmtOrder:
+      e.emptyTag("numFmt",
+        xlsxAttr("numFmtId", $doc.styleNumFmtIds[code]) &
+        xlsxAttr("formatCode", code))
+    e.closeTag("numFmts")
+  e.openTag("fonts", xlsxAttr("count", $doc.styleFonts.len))
+  for i, ft in doc.styleFonts:
+    e.writeStyleFont(ft, i == 0)
   e.closeTag("fonts")
-  e.openTag("fills", xlsxAttr("count", "2"))
-  e.openTag("fill")
-  e.emptyTag("patternFill", xlsxAttr("patternType", "none"))
-  e.closeTag("fill")
-  e.openTag("fill")
-  e.emptyTag("patternFill", xlsxAttr("patternType", "gray125"))
-  e.closeTag("fill")
+  e.openTag("fills", xlsxAttr("count", $doc.styleFills.len))
+  for fl in doc.styleFills:
+    e.writeStyleFill(fl)
   e.closeTag("fills")
-  e.openTag("borders", xlsxAttr("count", "1"))
-  e.openTag("border")
-  e.emptyTag("left")
-  e.emptyTag("right")
-  e.emptyTag("top")
-  e.emptyTag("bottom")
-  e.emptyTag("diagonal")
-  e.closeTag("border")
+  e.openTag("borders", xlsxAttr("count", $doc.styleBorders.len))
+  for b in doc.styleBorders:
+    e.writeStyleBorder(b)
   e.closeTag("borders")
   e.openTag("cellStyleXfs", xlsxAttr("count", "1"))
   e.emptyTag("xf",
     xlsxAttr("numFmtId", "0") & xlsxAttr("fontId", "0") &
     xlsxAttr("fillId", "0") & xlsxAttr("borderId", "0"))
   e.closeTag("cellStyleXfs")
-  e.openTag("cellXfs", xlsxAttr("count", "1"))
-  e.emptyTag("xf",
-    xlsxAttr("numFmtId", "0") & xlsxAttr("fontId", "0") &
-    xlsxAttr("fillId", "0") & xlsxAttr("borderId", "0") &
-    xlsxAttr("xfId", "0"))
+  e.openTag("cellXfs", xlsxAttr("count", $doc.styleXfs.len))
+  for xf in doc.styleXfs:
+    var attrs = xlsxAttr("numFmtId", $xf.numFmtId)
+    if xf.fontId >= 0: attrs.add xlsxAttr("fontId", $xf.fontId)
+    if xf.fillId >= 0: attrs.add xlsxAttr("fillId", $xf.fillId)
+    if xf.borderId >= 0: attrs.add xlsxAttr("borderId", $xf.borderId)
+    attrs.add xlsxAttr("xfId", $xf.xfId)
+    if xf.hasApplyNumberFormat:
+      attrs.add xlsxAttr("applyNumberFormat",
+        if xf.applyNumberFormat: "1" else: "0")
+    if xf.hasApplyFont:
+      attrs.add xlsxAttr("applyFont", if xf.applyFont: "1" else: "0")
+    if xf.hasApplyFill:
+      attrs.add xlsxAttr("applyFill", if xf.applyFill: "1" else: "0")
+    if xf.hasApplyBorder:
+      attrs.add xlsxAttr("applyBorder", if xf.applyBorder: "1" else: "0")
+    if xf.hasApplyAlignment:
+      attrs.add xlsxAttr("applyAlignment",
+        if xf.applyAlignment: "1" else: "0")
+    if xf.hasApplyProtection:
+      attrs.add xlsxAttr("applyProtection",
+        if xf.applyProtection: "1" else: "0")
+    if xf.hasAlignment or xf.hasProtection:
+      e.openTag("xf", attrs)
+      if xf.hasAlignment: e.writeXfAlignment(xf.alignment)
+      if xf.hasProtection: e.writeXfProtection(xf.protection)
+      e.closeTag("xf")
+    else:
+      e.emptyTag("xf", attrs)
   e.closeTag("cellXfs")
   e.openTag("cellStyles", xlsxAttr("count", "1"))
   e.emptyTag("cellStyle",
@@ -738,6 +1023,48 @@ proc writeStylesXml(e: var XlsxEmit) =
     xlsxAttr("builtinId", "0"))
   e.closeTag("cellStyles")
   e.closeTag("styleSheet")
+
+proc writeThemeXml(e: var XlsxEmit) =
+  ## Minimal DrawingML theme (same Office palette and minimal
+  ## `fmtScheme`/`fontScheme` shape as the docx writer). The reader
+  ## resolves all style colors through this part, so it ships on every
+  ## save (style-free saves included) rather than conditionally.
+  const palette = [
+    ("dk1", "000000"), ("lt1", "FFFFFF"), ("dk2", "44546A"),
+    ("lt2", "E7E6E6"), ("accent1", "4472C4"), ("accent2", "ED7D31"),
+    ("accent3", "A5A5A5"), ("accent4", "FFC000"), ("accent5", "5B9BD5"),
+    ("accent6", "70AD47"), ("hlink", "0563C1"), ("folHlink", "954F72")]
+  e.decl()
+  e.openTag("a:theme",
+    xlsxAttr("xmlns:a",
+      "http://schemas.openxmlformats.org/drawingml/2006/main") &
+    xlsxAttr("name", "Office Theme"))
+  e.openTag("a:themeElements")
+  e.openTag("a:clrScheme", xlsxAttr("name", "Office"))
+  for (slot, rgb) in palette:
+    e.openTag("a:" & slot)
+    e.emptyTag("a:srgbClr", xlsxAttr("val", rgb))
+    e.closeTag("a:" & slot)
+  e.closeTag("a:clrScheme")
+  e.openTag("a:fmtScheme", xlsxAttr("name", "Office"))
+  for lst in ["a:fillStyleLst", "a:lnStyleLst", "a:effectStyleLst",
+      "a:bgFillStyleLst"]:
+    e.openTag(lst)
+    e.openTag("a:solidFill")
+    e.emptyTag("a:schemeClr", xlsxAttr("val", "phClr"))
+    e.closeTag("a:solidFill")
+    e.closeTag(lst)
+  e.closeTag("a:fmtScheme")
+  e.openTag("a:fontScheme", xlsxAttr("name", "Office"))
+  for kind in ["a:majorFont", "a:minorFont"]:
+    e.openTag(kind)
+    e.emptyTag("a:latin", xlsxAttr("typeface", "Calibri Light"))
+    e.emptyTag("a:ea", xlsxAttr("typeface", ""))
+    e.emptyTag("a:cs", xlsxAttr("typeface", ""))
+    e.closeTag(kind)
+  e.closeTag("a:fontScheme")
+  e.closeTag("a:themeElements")
+  e.closeTag("a:theme")
 
 proc writeWorkbookXml(e: var XlsxEmit, doc: XlsxDoc) =
   e.decl()
@@ -800,9 +1127,13 @@ proc writeWorkbookRels(e: var XlsxEmit, doc: XlsxDoc) =
     xlsxAttr("Id", "rId" & $styleId) &
     xlsxAttr("Type", relNs & "/styles") &
     xlsxAttr("Target", "styles.xml"))
+  e.emptyTag("Relationship",
+    xlsxAttr("Id", "rId" & $(styleId + 1)) &
+    xlsxAttr("Type", relNs & "/theme") &
+    xlsxAttr("Target", "theme/theme1.xml"))
   if doc.sst.len > 0:
     e.emptyTag("Relationship",
-      xlsxAttr("Id", "rId" & $(styleId + 1)) &
+      xlsxAttr("Id", "rId" & $(styleId + 2)) &
       xlsxAttr("Type", relNs & "/sharedStrings") &
       xlsxAttr("Target", "sharedStrings.xml"))
   e.closeTag("Relationships")
@@ -855,6 +1186,10 @@ proc writeContentTypes(e: var XlsxEmit, doc: XlsxDoc) =
     xlsxAttr("PartName", "/xl/styles.xml") &
     xlsxAttr("ContentType",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"))
+  e.emptyTag("Override",
+    xlsxAttr("PartName", "/xl/theme/theme1.xml") &
+    xlsxAttr("ContentType",
+      "application/vnd.openxmlformats-officedocument.theme+xml"))
   if doc.sst.len > 0:
     e.emptyTag("Override",
       xlsxAttr("PartName", "/xl/sharedStrings.xml") &
@@ -979,8 +1314,11 @@ proc buildParts(doc: var XlsxDoc, e: var XlsxEmit):
   e.writeWorkbookRels(doc)
   result.add ("xl/_rels/workbook.xml.rels", e.toBytes())
   e.clear()
-  e.writeStylesXml()
+  e.writeStylesXml(doc)
   result.add ("xl/styles.xml", e.toBytes())
+  e.clear()
+  e.writeThemeXml()
+  result.add ("xl/theme/theme1.xml", e.toBytes())
   e.clear()
   if doc.sst.len > 0:
     e.writeSharedStringsXml(doc)

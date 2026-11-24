@@ -98,5 +98,31 @@ hyperlinks incl. rels part, defined names with scopes).
   the temp parent (default system temp). Same portable-temp rules as the
   reader (no hardcoded `/tmp`).
 
-See `tests/t_xlsx_write.nim` (20/20: W1 cells plus W2 merges, geometry,
-hyperlinks incl. rels part, defined names with scopes).
+## Styles (W3)
+
+- `XlsxCellStyle(numFmtCode, hasFont/font, hasFill/fill, hasBorder/border,
+  hasAlignment/alignment, hasProtection/protection)` — component types
+  reuse the reader model (`XlsxFont`, `XlsxFill`, `XlsxBorder`,
+  `XlsxAlignment`, `XlsxProtection`) so `getCellStyle` round-trips
+  compare equal. Only pattern fills supported (gradients fail loudly
+  in `addStyle`).
+- `addStyle(doc, style): int` — intern, return the `cellXfs` index.
+  Index 0 stays reserved for unstyled cells, so even an empty style
+  yields a nonzero index (this is what flips bools to `TRUE`/`FALSE`).
+  Components dedupe structurally (including against the seeded blank
+  defaults); `cellXfs` records dedupe among appended entries only.
+  Custom number formats allocate ids from 164 up, deduped by code;
+  builtin codes (e.g. `mm-dd-yy` -> 14) map to their builtin ids.
+- `setCellStyle(doc, sheet, ref, idx)` / `setRangeStyle(doc, sheet,
+  fromRef, toRef, idx)` — assign to existing cells only; absent cells
+  and out-of-range indices fail loudly (no phantom cells).
+- Every save ships a minimal `xl/theme/theme1.xml` (Office palette,
+  docx-writer shape): the reader resolves all style colors through the
+  theme, so conditional emission would silently drop colors.
+- `setCellDate` + a date `numFmtCode` renders serials as dates
+  (`formatApplied` true); any nonzero style index renders bools as
+  `TRUE`/`FALSE`. Style-free cells keep the exact W1 shape.
+
+See `tests/t_xlsx_write.nim` (26/26: W1 cells, W2 extras, W3 date/bool/
+custom formats, font/fill/border/alignment round-trip, dedupe, theme
+presence).

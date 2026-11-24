@@ -6,6 +6,7 @@
 ## tests round-trip through the reader, never byte-compare.
 
 import std/[unittest, tables, strutils, os, tempfiles, times]
+import openparser/colors
 import opendocs/xlsx
 import opendocs/zip
 
@@ -179,6 +180,110 @@ suite "xlsx writer fresh build":
     finally:
       try: removeFile(path)
       except OSError: discard
+
+suite "xlsx writer styles":
+  test "date style renders serials as dates":
+    var doc = newXlsxDoc()
+    doc.setCellDate("Sheet1", "A1",
+      dateTime(2026, mJan, 2, 12, 0, 0, 0, utc()))
+    let di = doc.addStyle(XlsxCellStyle(numFmtCode: "mm-dd-yy"))
+    check di == 1 # first appended xf (0 stays reserved for unstyled)
+    doc.setCellStyle("Sheet1", "A1", di)
+    let img = doc.saveXlsxBytes()
+    let f = openXlsxBytes(img)
+    defer: f.closeXlsx()
+    check f.getCellValue("Sheet1", "A1") == "01-02-26"
+    check f.getCellStyle("Sheet1", "A1").numFmtId == 14
+    check f.formatApplied("Sheet1", "A1")
+
+  test "bool style renders TRUE/FALSE":
+    var doc = newXlsxDoc()
+    doc.setCellBool("Sheet1", "A1", true)
+    doc.setCellBool("Sheet1", "A2", false)
+    let bi = doc.addStyle(XlsxCellStyle()) # empty style: nonzero index
+    check bi == 1
+    doc.setRangeStyle("Sheet1", "A1", "A2", bi)
+    let img = doc.saveXlsxBytes()
+    let f = openXlsxBytes(img)
+    defer: f.closeXlsx()
+    check f.getCellValue("Sheet1", "A1") == "TRUE"
+    check f.getCellValue("Sheet1", "A2") == "FALSE"
+
+  test "custom number format allocates ids from 164":
+    var doc = newXlsxDoc()
+    doc.setCellNum("Sheet1", "A1", 1.5)
+    let ci = doc.addStyle(XlsxCellStyle(numFmtCode: "0.000"))
+    doc.setCellStyle("Sheet1", "A1", ci)
+    let img = doc.saveXlsxBytes()
+    let f = openXlsxBytes(img)
+    defer: f.closeXlsx()
+    check f.getCellValue("Sheet1", "A1") == "1.500"
+    let st = f.getCellStyle("Sheet1", "A1")
+    check st.numFmtId >= 164
+    check f.formatApplied("Sheet1", "A1")
+    check not f.formatApplied("Sheet1", "A2") # absent cell, unstyled
+
+  test "font fill border alignment round-trip":
+    var doc = newXlsxDoc()
+    doc.setCellStr("Sheet1", "A1", "styled")
+    let red = Color(r: 1.0, g: 0.0, b: 0.0, a: 1.0, format: cfHex,
+      valid: true)
+    let idx = doc.addStyle(XlsxCellStyle(
+      hasFont: true,
+      font: XlsxFont(name: "Arial", size: 14.0, bold: true, color: red),
+      hasFill: true,
+      fill: XlsxFill(kind: "pattern", pattern: "solid", fgColor: red),
+      hasBorder: true,
+      border: XlsxBorder(left: XlsxBorderSide(style: "thin", color: red)),
+      hasAlignment: true,
+      alignment: XlsxAlignment(horizontal: "center", wrapText: true)))
+    doc.setCellStyle("Sheet1", "A1", idx)
+    let img = doc.saveXlsxBytes()
+    let f = openXlsxBytes(img)
+    defer: f.closeXlsx()
+    let st = f.getCellStyle("Sheet1", "A1")
+    check st.hasFont
+    check st.font.name == "Arial"
+    check st.font.size == 14.0
+    check st.font.bold
+    check st.font.color.valid
+    check st.hasFill
+    check st.fill.pattern == "solid"
+    check st.hasBorder
+    check st.border.left.style == "thin"
+    check st.hasAlignment
+    check st.alignment.horizontal == "center"
+    check st.alignment.wrapText
+    # Theme part ships so colors resolve (reader needs it).
+    let arch = openZipBytes(img)
+    check arch.findEntry("xl/theme/theme1.xml") >= 0
+
+  test "identical styles dedupe, empty never aliases 0":
+    var doc = newXlsxDoc()
+    let a = doc.addStyle(XlsxCellStyle(numFmtCode: "0.00"))
+    let b = doc.addStyle(XlsxCellStyle(numFmtCode: "0.00"))
+    check a == b
+    check a == 1
+    let c = doc.addStyle(XlsxCellStyle())
+    let d = doc.addStyle(XlsxCellStyle())
+    check c == d
+    check c != 0
+    check c != a # different content (no numFmt), different index
+
+  test "style errors fail loudly":
+    var doc = newXlsxDoc()
+    doc.setCellStr("Sheet1", "A1", "x")
+    expect XlsxError:
+      doc.setCellStyle("Sheet1", "A1", 7) # out of range
+    expect XlsxError:
+      doc.setCellStyle("Sheet1", "B9", 0) # absent cell
+    expect XlsxError:
+      doc.setRangeStyle("Sheet1", "A1", "A2", 0) # A2 absent
+    expect XlsxError:
+      discard doc.addStyle(XlsxCellStyle(hasFill: true,
+        fill: XlsxFill(kind: "gradient")))
+    expect XlsxError:
+      doc.setRangeStyle("Sheet1", "ZZZ1", "A2", 0)
 
 suite "xlsx writer sheet extras":
   test "merges round-trip with anchor values":
