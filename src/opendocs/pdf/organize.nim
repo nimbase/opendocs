@@ -13,6 +13,7 @@
 ## reversed corners (non-finite fails). Appearance streams are not
 ## generated (needs a renderer).
 
+import std/tables
 import ./lexer
 import ./cos
 import ./docmodel
@@ -237,3 +238,69 @@ proc addTextAnnot*(b: var PdfBuilder, page: int,
         CosObj(kind: coFloat, fval: r[3])]),
       CosObj(kind: coStr, sval: contents)])
   b.pushAnnot(page, d)
+
+proc addAnnotsUpdate*(base: string,
+    specs: seq[tuple[page: int, dict: CosObj]]): string =
+  ## Append annotation dicts to an existing file through one
+  ## incremental update: each dict becomes a new object, each touched
+  ## page's /Annots gains the references (direct arrays are rewritten
+  ## on the page dict, indirect ones in place). Out-of-range pages and
+  ## non-array /Annots fail loudly.
+  if specs.len == 0:
+    pdfFail("no annotations to add")
+  var u = beginUpdate(base)
+  var d = openDoc(u.base, u.limits)
+  let refs = d.pageRefs()
+  var perPage = initTable[int, seq[int]]()
+  for s in specs:
+    if s.page < 0 or s.page >= refs.len:
+      pdfFail("annotation page " & $s.page & " out of range")
+    if s.dict.kind != coDict:
+      pdfFail("annotation is not a dictionary")
+    let num = u.addObject(writeCos(s.dict))
+    perPage.mgetOrPut(s.page, @[]).add(num)
+  for page, nums in perPage.pairs:
+    let pref = refs[page].pageRef
+    if pref.kind != coRef:
+      pdfFail("page tree leaf is not an indirect reference")
+    let pdict = d.resolve(pref)
+    if pdict.kind != coDict:
+      pdfFail("page tree leaf is not a dictionary")
+    var arefs: seq[CosObj] = @[]
+    for n in nums:
+      arefs.add(CosObj(kind: coRef, refNum: n, refGen: 0))
+    let annots = pdict.dictGet("Annots")
+    if annots.kind == coNull:
+      var keys = pdict.keys
+      var vals = pdict.vals
+      keys.add("Annots")
+      vals.add(CosObj(kind: coArray, items: arefs))
+      discard u.updateObject(pref.refNum,
+        writeCos(CosObj(kind: coDict, keys: keys, vals: vals)))
+    elif annots.kind == coArray:
+      var keys: seq[string] = @[]
+      var vals: seq[CosObj] = @[]
+      for i, k in pdict.keys:
+        if k == "Annots":
+          var items = pdict.vals[i].items
+          for r in arefs:
+            items.add(r)
+          keys.add(k)
+          vals.add(CosObj(kind: coArray, items: items))
+        else:
+          keys.add(k)
+          vals.add(pdict.vals[i])
+      discard u.updateObject(pref.refNum,
+        writeCos(CosObj(kind: coDict, keys: keys, vals: vals)))
+    elif annots.kind == coRef:
+      let arr = d.resolve(annots)
+      if arr.kind != coArray:
+        pdfFail("page /Annots is not an array")
+      var items = arr.items
+      for r in arefs:
+        items.add(r)
+      discard u.updateObject(annots.refNum,
+        writeCos(CosObj(kind: coArray, items: items)))
+    else:
+      pdfFail("page /Annots is not an array")
+  u.finishUpdate()

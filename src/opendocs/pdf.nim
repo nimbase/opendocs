@@ -73,11 +73,13 @@ export FileAttachment, guessMime, embeddedFiles, embedFile,
   embedFileUpdate
 
 from pdf/forms import FieldKind, FieldOption, FieldWidget, FormField,
-  formFields, fieldNames, getField, isChecked, fillText, setCheck,
-  selectRadio, selectChoice, selectChoices, resetFields, flattenFields
+  formFields, fieldNames, getField, calcOrder, isChecked, fillText,
+  setCheck, selectRadio, selectChoice, selectChoices, resetFields,
+  flattenFields
 export FieldKind, FieldOption, FieldWidget, FormField,
-  formFields, fieldNames, getField, isChecked, fillText, setCheck,
-  selectRadio, selectChoice, selectChoices, resetFields, flattenFields
+  formFields, fieldNames, getField, calcOrder, isChecked, fillText,
+  setCheck, selectRadio, selectChoice, selectChoices, resetFields,
+  flattenFields
 
 from pdf/sign import DocSignature, SigDraft, docSignatures,
   verifyByteRangeHash, addSignaturePlaceholder
@@ -104,14 +106,23 @@ export PdfAnnot, readAnnot, pageAnnots, docAnnots
 from pdf/structread import PdfStructElem, structTree
 export PdfStructElem, structTree
 
+from pdf/xfdf import exportXfdf, importXfdf
+export exportXfdf, importXfdf
+
+from pdf/redact import RedactRect, markRedactions, applyRedactions,
+  verifyNoFauxRedaction
+export RedactRect, markRedactions, applyRedactions,
+  verifyNoFauxRedaction
+
 from pdf/layers import PdfLayer, docLayers, layerOCGs
 export PdfLayer, docLayers, layerOCGs
 
 from pdf/organize import setPageRotation, setPageBox, deletePages,
   appendPages, addOutline, setPageLabels, addLink, addInternalLink,
-  addTextAnnot
+  addTextAnnot, addAnnotsUpdate
 export setPageRotation, setPageBox, deletePages, appendPages,
-  addOutline, setPageLabels, addLink, addInternalLink, addTextAnnot
+  addOutline, setPageLabels, addLink, addInternalLink, addTextAnnot,
+  addAnnotsUpdate
 
 from pdf/draw import PdfColor, PdfColorKind, Path, PathCmd, FillOpts,
   black, white, rgb, gray, cmyk, fillOp, strokeOp, moveTo, lineTo,

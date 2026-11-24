@@ -12,8 +12,12 @@
 ## on/off states kept or drawn), and raises /NeedAppearances so
 ## regenerating viewers stay correct too. `flattenFields`
 ## bakes text, checks, radios, and choices into page content, drops
-## the widget annotations, and prunes the field tree. Signature and
-## pushbutton fields are extracted but never filled or flattened.
+## the widget annotations, and prunes the field tree (including
+## /CalcOrder entries of flattened nodes; the key goes when empty).
+## Signature and pushbutton fields are extracted but never filled or
+## flattened. Programmatic fill ignores /Ff ReadOnly (viewer UI
+## semantics: API sets stay allowed); required flags are reported on
+## FormField, never enforced. `calcOrder` reads /CalcOrder as names.
 
 import std/algorithm
 import std/sets
@@ -456,6 +460,43 @@ proc getField*(d: var PdfDoc, name: string): FormField =
     if f.name == name:
       return f
   pdfFail("no form field named '" & name & "'")
+
+proc calcOrder*(d: var PdfDoc): seq[string] =
+  ## Dotted field names in /AcroForm /CalcOrder order (empty when the
+  ## entry is absent). Entries that do not resolve to a known field
+  ## fail loudly naming the object number.
+  let acroRef = d.catalog().dictGet("AcroForm")
+  if acroRef.kind == coNull:
+    return @[]
+  var acro = acroRef
+  if acro.kind == coRef:
+    acro = d.resolve(acro)
+  if acro.kind != coDict:
+    pdfFail("catalog /AcroForm is not a dictionary")
+  var co = acro.dictGet("CalcOrder")
+  if co.kind == coNull:
+    return @[]
+  if co.kind == coRef:
+    co = d.resolve(co)
+  if co.kind != coArray:
+    pdfFail("/AcroForm /CalcOrder is not an array")
+  var byRef = initTable[int, string]()
+  for f in d.rawFields():
+    if f.nodeRef.kind == coRef and f.fullName.len > 0:
+      byRef[f.nodeRef.refNum] = f.fullName
+  for e in co.items:
+    var v = e
+    if v.kind == coArray:
+      if v.items.len == 0:
+        pdfFail("/AcroForm /CalcOrder entry is empty")
+        # Unreachable; keeps the branch total.
+      v = v.items[0]
+    if v.kind != coRef:
+      pdfFail("/AcroForm /CalcOrder entry is not a field reference")
+    if not byRef.hasKey(v.refNum):
+      pdfFail("/AcroForm /CalcOrder entry " & $v.refNum &
+        " is not a form field")
+    result.add(byRef[v.refNum])
 
 proc isChecked*(f: FormField): bool =
   ## Checkbox/radio selected state from the field value.
@@ -1691,7 +1732,9 @@ proc flattenFields*(base: string, only: seq[string] = @[]): string =
         kept.add(a)
     u.updateDeep(donor, bumped, u.rootNum, pr.path,
       CosObj(kind: coArray, items: kept))
-  # Drop /AcroForm when no value-holding field remains.
+  # Prune flattened nodes out of /CalcOrder so partial flattens never
+  # leave dangling calculation references. Skipped when nothing
+  # survives (the whole /AcroForm goes below).
   var targeted = initHashSet[int]()
   for ti in targets:
     targeted.incl(ti)
@@ -1700,6 +1743,85 @@ proc flattenFields*(base: string, only: seq[string] = @[]): string =
     if i notin targeted and f.fullName.len > 0 and
         kindOf(f.inh) != fkUnknown:
       inc remaining
+  if remaining > 0:
+    var removed = initHashSet[int]()
+    for ti in targets:
+      if raw[ti].nodeRef.kind == coRef:
+        removed.incl(raw[ti].nodeRef.refNum)
+    let (_, _, acroRef) = donor.navigate(u.rootNum,
+      @[(isKey: true, key: "AcroForm", idx: 0)])
+    let acro = donor.resolve(acroRef)
+    if acro.kind == coDict:
+      let coEntry = acro.dictGet("CalcOrder")
+      if coEntry.kind == coRef or coEntry.kind == coArray:
+        var co = coEntry
+        if co.kind == coRef:
+          co = donor.resolve(co)
+        if co.kind != coArray:
+          pdfFail("/AcroForm /CalcOrder is not an array")
+        var kept: seq[CosObj] = @[]
+        for e in co.items:
+          var v = e
+          if v.kind == coArray:
+            if v.items.len == 0:
+              pdfFail("/AcroForm /CalcOrder entry is empty")
+            v = v.items[0]
+          if v.kind != coRef:
+            pdfFail("/AcroForm /CalcOrder entry is not a field reference")
+          if v.refNum notin removed:
+            kept.add(e)
+        if coEntry.kind == coRef and kept.len > 0:
+          # Indirect array prunes in place; the field containers never
+          # share this object, so no double-stage is possible.
+          u.stageBody(donor, bumped, coEntry.refNum,
+            writeCos(CosObj(kind: coArray, items: kept)))
+        else:
+          # Fold into the /AcroForm dict: drop the key when nothing
+          # (or nothing but an emptied indirect array) survives.
+          var akeys: seq[string] = @[]
+          var avals: seq[CosObj] = @[]
+          for i, k in acro.keys:
+            if k == "CalcOrder":
+              continue
+            akeys.add(k)
+            avals.add(acro.vals[i])
+          if kept.len > 0:
+            akeys.add("CalcOrder")
+            avals.add(CosObj(kind: coArray, items: kept))
+          let fresh =
+            CosObj(kind: coDict, keys: akeys, vals: avals)
+          if acroRef.kind == coRef and bumped.hasKey(acroRef.refNum):
+            # Field-container pruning already staged this object (direct
+            # /Fields): parse the staged body back and fold the
+            # /CalcOrder change into it rather than staging twice.
+            var stagedIdx = -1
+            for i in 0 ..< u.added.len:
+              if u.added[i].num == acroRef.refNum:
+                stagedIdx = i
+                break
+            if stagedIdx < 0:
+              pdfFail("internal error: staged object missing")
+            var lx = initLexer(u.added[stagedIdx].body)
+            let staged = lx.parseCosValue()
+            if staged.kind != coDict:
+              pdfFail("internal error: staged object not a dict")
+            var skeys: seq[string] = @[]
+            var svals: seq[CosObj] = @[]
+            for i, k in staged.keys:
+              if k == "CalcOrder":
+                continue
+              skeys.add(k)
+              svals.add(staged.vals[i])
+            if kept.len > 0 and coEntry.kind != coRef:
+              skeys.add("CalcOrder")
+              svals.add(CosObj(kind: coArray, items: kept))
+            u.added[stagedIdx].body =
+              writeCos(CosObj(kind: coDict, keys: skeys, vals: svals))
+          else:
+            u.updateDeep(donor, bumped, u.rootNum,
+              @[(isKey: true, key: "AcroForm", idx: 0)], fresh,
+              followRef = true)
+  # Drop /AcroForm when no value-holding field remains.
   if remaining <= 0:
     # Drop the whole /AcroForm key from a fresh catalog generation.
     let catDict = donor.catalog()

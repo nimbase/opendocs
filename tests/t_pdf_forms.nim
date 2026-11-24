@@ -405,3 +405,35 @@ test "flatten falls back to builtin Helvetica":
   let kid = d.resolve(pages.dictGet("Kids").items[0])
   let res = d.resolve(kid.dictGet("Resources"))
   check res.dictGet("Font").kind == coDict
+
+proc calcPdf(): string =
+  assemblePdf(@[
+    "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] " &
+      "/Resources << /Font << /Helv 7 0 R >> >> " &
+      "/Annots [5 0 R 6 0 R] /Contents 8 0 R >>",
+    "<< /Fields [5 0 R 6 0 R] /CalcOrder [6 0 R 5 0 R] >>",
+    "<< /Type /Annot /Subtype /Widget /Rect [10 10 100 30] " &
+      "/FT /Tx /T (Name) /V (a) /DA (/Helv 12 Tf 0 g) /P 3 0 R >>",
+    "<< /Type /Annot /Subtype /Widget /Rect [10 40 100 60] " &
+      "/FT /Tx /T (Code) /V (b) /DA (/Helv 12 Tf 0 g) /P 3 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    streamObj("", ""),
+  ])
+
+test "calc order reads entry order":
+  var d = openDoc(calcPdf())
+  check d.calcOrder() == @["Code", "Name"]
+
+test "calc order empty when absent":
+  var d = openDoc(formPdf())
+  check d.calcOrder().len == 0
+
+test "partial flatten prunes calc order":
+  var d = openDoc(flattenFields(calcPdf(), @["Name"]))
+  check d.calcOrder() == @["Code"]
+
+test "full flatten drops calc order with acroform":
+  var d = openDoc(flattenFields(calcPdf()))
+  check d.calcOrder().len == 0
