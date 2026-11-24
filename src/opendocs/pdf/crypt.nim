@@ -12,6 +12,7 @@
 ## dictionary itself (O/U/OE/UE) is never decrypted.
 
 import std/strutils
+import std/sysrand
 import nimcypher/algos/rc4
 import nimcypher/algos/aes
 import nimcypher/algos/sha256
@@ -19,6 +20,34 @@ import nimcypher/hashes/md5
 import ./types
 import ./lexer
 import ./cos
+
+# ---------------------------------------------------------------------------
+# Encryption writer (M16e): R4/AESV2 and R6/AESV3 output only.
+# ---------------------------------------------------------------------------
+#
+# Decrypt-then-encrypt, never encrypt-in-place. R2/R3 remain readable,
+# never writable: writing weak RC4 on purpose is refused. R6 here matches
+# our reader (single-round SHA-256 for U/O validation and key wrapping).
+# The spec's hardened 2A/2B iteration loop is not implemented; files use
+# single-round hashes that our reader accepts. Third-party strict
+# viewers may reject some passwords: verify with qpdf when interop
+# matters. /Encrypt itself is never encrypted.
+
+type
+  EncryptOptions* = object
+    userPassword*: string
+    ownerPassword*: string ## "" means same as user
+    revision*: int ## 4 or 6
+    permissions*: int ## /P bits (advisory only, viewers may ignore)
+    encryptMetadata*: bool
+
+proc randomStr*(n: int): string =
+  if n <= 0:
+    pdfFail("random bytes need a positive length")
+  result = newString(n)
+  let bytes = urandom(n)
+  for i in 0 ..< n:
+    result[i] = char(bytes[i])
 
 type
   CryptClass* = enum
@@ -374,3 +403,156 @@ proc openCrypt*(enc: CosObj, idFirst, password: string,
     pdfFail("unsupported /Encrypt /V " & $v & " (want 1, 2, 4 or 5)")
   c.encryptObjNum = encryptObjNum
   c
+
+# ---------------------------------------------------------------------------
+# Writer forward path
+# ---------------------------------------------------------------------------
+
+proc checkEncryptOptions*(opts: EncryptOptions) =
+  if opts.revision != 4 and opts.revision != 6:
+    pdfFail("encrypt revision must be 4 or 6, got " & $opts.revision)
+  if opts.userPassword.len > 127:
+    pdfFail("user password longer than 127 bytes")
+  if opts.ownerPassword.len > 127:
+    pdfFail("owner password longer than 127 bytes")
+
+proc effectiveOwner*(opts: EncryptOptions): string =
+  if opts.ownerPassword.len > 0: opts.ownerPassword
+  else: opts.userPassword
+
+proc pw127(s: string): string =
+  if s.len > 127: s[0 ..< 127] else: s
+
+proc objKeyWrite*(fileKey: string, objNum, gen, keyLen: int,
+    salted: bool): string =
+  var m = fileKey
+  m.add(char(objNum and 0xFF))
+  m.add(char((objNum shr 8) and 0xFF))
+  m.add(char((objNum shr 16) and 0xFF))
+  m.add(char(gen and 0xFF))
+  m.add(char((gen shr 8) and 0xFF))
+  if salted:
+    m.add("sAlT")
+  md5raw(m)[0 ..< min(keyLen + 5, 16)]
+
+proc encryptDataWithIv*(fileKey: string, objNum, gen: int, data: string,
+    cls: CryptClass, keyLen: int, iv: string): string =
+  ## Encrypt one stream body or string with explicit class and IV.
+  ## Empty input still gets an IV prefix for the AES classes.
+  case cls
+  of ccNone:
+    data
+  of ccRC4:
+    rc4s(objKeyWrite(fileKey, objNum, gen, keyLen, false), data)
+  of ccAESV2:
+    aesCbcEnc(objKeyWrite(fileKey, objNum, gen, keyLen, true), iv, data)
+  of ccAESV3:
+    aesCbcEnc(fileKey, iv, data)
+
+proc encryptData*(fileKey: string, objNum, gen: int, data: string,
+    cls: CryptClass, keyLen: int): string =
+  encryptDataWithIv(fileKey, objNum, gen, data, cls, keyLen,
+    randomStr(16))
+
+proc encryptValueWithIv*(fileKey: string, objNum, gen: int, val: CosObj,
+    strCls: CryptClass, keyLen: int, iv: string): CosObj =
+  case val.kind
+  of coStr:
+    CosObj(kind: coStr, sval: encryptDataWithIv(fileKey, objNum, gen,
+      val.sval, strCls, keyLen, iv))
+  of coArray:
+    var items = newSeq[CosObj](val.items.len)
+    for i, it in val.items:
+      items[i] = encryptValueWithIv(fileKey, objNum, gen, it, strCls,
+        keyLen, iv)
+    CosObj(kind: coArray, items: items)
+  of coDict:
+    var vals = newSeq[CosObj](val.vals.len)
+    for i, v in val.vals:
+      vals[i] = encryptValueWithIv(fileKey, objNum, gen, v, strCls,
+        keyLen, iv)
+    CosObj(kind: coDict, keys: val.keys, vals: vals)
+  else:
+    val
+
+proc encryptValue*(fileKey: string, objNum, gen: int, val: CosObj,
+    strCls: CryptClass, keyLen: int): CosObj =
+  encryptValueWithIv(fileKey, objNum, gen, val, strCls, keyLen,
+    randomStr(16))
+
+proc makeEncryptDict*(opts: EncryptOptions, fileKey, idFirst: string,
+    u, o, ue, oe, perms: string): CosObj =
+  ## /Encrypt dictionary for revision 4 (R4/AESV2) or 6 (R6/AESV3).
+  ## `u`, `o` carry O/U; `ue`/`oe`/`perms` are R6-only ("" for R4).
+  checkEncryptOptions(opts)
+  if opts.revision == 4:
+    let stdcf = CosObj(kind: coDict, keys: @["CFM"],
+      vals: @[CosObj(kind: coName, name: "AESV2")])
+    var keys = @["Filter", "V", "R", "Length", "P", "O", "U", "CF",
+      "StmF", "StrF"]
+    var vals = @[CosObj(kind: coName, name: "Standard"),
+      CosObj(kind: coInt, ival: 4),
+      CosObj(kind: coInt, ival: 4),
+      CosObj(kind: coInt, ival: 128),
+      CosObj(kind: coInt, ival: opts.permissions),
+      CosObj(kind: coStr, sval: o),
+      CosObj(kind: coStr, sval: u),
+      CosObj(kind: coDict, keys: @["StdCF"], vals: @[stdcf]),
+      CosObj(kind: coName, name: "StdCF"),
+      CosObj(kind: coName, name: "StdCF")]
+    if not opts.encryptMetadata:
+      keys.add("EncryptMetadata")
+      vals.add(CosObj(kind: coBool, bval: false))
+    CosObj(kind: coDict, keys: keys, vals: vals)
+  else:
+    CosObj(kind: coDict,
+      keys: @["Filter", "V", "R", "Length", "P", "O", "U", "OE",
+        "UE", "Perms"],
+      vals: @[CosObj(kind: coName, name: "Standard"),
+        CosObj(kind: coInt, ival: 5),
+        CosObj(kind: coInt, ival: 6),
+        CosObj(kind: coInt, ival: 256),
+        CosObj(kind: coInt, ival: opts.permissions),
+        CosObj(kind: coStr, sval: o),
+        CosObj(kind: coStr, sval: u),
+        CosObj(kind: coStr, sval: oe),
+        CosObj(kind: coStr, sval: ue),
+        CosObj(kind: coStr, sval: perms)])
+
+proc buildEncryptObjects*(opts: EncryptOptions, idFirst: string,
+    fileKey, ivFixed: string):
+    tuple[enc: CosObj, fileKeyOut: string] =
+  ## Forward O/U (+OE/UE/Perms for R6). `fileKey` "" generates fresh
+  ## (32 random bytes for R6); R4 derives deterministically. `ivFixed`
+  ## is unused here; per-object IVs are drawn at encryption time.
+  checkEncryptOptions(opts)
+  let owner = opts.effectiveOwner()
+  if opts.revision == 4:
+    let o = computeO(owner, opts.userPassword, 16, 4)
+    let fk = fileKeyR26(opts.userPassword, o, opts.permissions,
+      idFirst, 16, 4, opts.encryptMetadata)
+    let u = computeU(fk, idFirst, 16, 4)
+    (makeEncryptDict(opts, fk, idFirst, u, o, "", "", ""), fk)
+  else:
+    let fk =
+      if fileKey.len > 0:
+        if fileKey.len != 32:
+          pdfFail("R6 file key must be 32 bytes")
+        fileKey
+      else:
+        randomStr(32)
+    let meta = if opts.encryptMetadata: "T" else: "F"
+    let pr = randomStr(4)
+    let uVal = randomStr(8)
+    let uKey = randomStr(8)
+    let oVal = randomStr(8)
+    let oKey = randomStr(8)
+    let upw = pw127(opts.userPassword)
+    let opw = pw127(owner)
+    let u = sha256raw(upw & uVal) & uVal & uKey
+    let ue = aesEcbEnc(sha256raw(upw & uKey), fk)
+    let perms = aesEcbEnc(fk, le32(opts.permissions) &
+      "\xFF\xFF\xFF\xFF" & meta & "adb" & pr)
+    let o = sha256raw(opw & oVal & u) & oVal & oKey
+    let oe = aesEcbEnc(sha256raw(opw & oKey & u), fk)
+    (makeEncryptDict(opts, fk, idFirst, u, o, ue, oe, perms), fk)

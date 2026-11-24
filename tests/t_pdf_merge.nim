@@ -173,8 +173,10 @@ test "empty selections fail loudly":
   expect PdfError:
     discard mergePdfs(none)
 
-test "encrypted donor rejected":
+test "encrypted donor transplants when opened":
   var d = openDoc(readFile("tests" / "data" / "pdf" / "m4_rc4.pdf"),
     defaultPdfLimits(), "user123")
-  expect PdfError:
-    discard extractPages(d, @[0])
+  var b = newPdfBuilder()
+  discard b.copyPage(d, 0)
+  var outDoc = openDoc(b.buildPdf())
+  check outDoc.pageCount() == 1

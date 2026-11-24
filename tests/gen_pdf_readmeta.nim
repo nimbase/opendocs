@@ -179,10 +179,45 @@ proc writeStructTree() =
   doAssert t.kids.len == 1
   doAssert t.kids[0].structType == "Sect"
 
+proc writeLayers() =
+  let objs = @[
+    "<< /Type /Catalog /Pages 2 0 R /OCProperties 4 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
+    "<< /OCGs [5 0 R 6 0 R 7 0 R << /Type /OCG /Name (Inline) >>] " &
+      "/D << /OFF [6 0 R] >> >>",
+    "<< /Type /OCG /Name (Draft marks) >>",
+    "<< /Type /OCG /Name (Review) /Intent /View " &
+      "/Usage << /Print << /PrintState /ON >> >> >>",
+    "<< /Type /OCG /Name (Hidden) /Intent [/View /Design] >>",
+  ]
+  writeFile(OutDir / "layers.pdf", assemblePdf(objs))
+  var d = openDoc(readFile(OutDir / "layers.pdf"))
+  doAssert d.docLayers().len == 4
+  doAssert d.docLayers()[0].on
+  doAssert not d.docLayers()[1].on
+
+proc writeLayersBaseOff() =
+  let objs = @[
+    "<< /Type /Catalog /Pages 2 0 R /OCProperties 4 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
+    "<< /OCGs [5 0 R 6 0 R] /D << /BaseState /OFF /ON [5 0 R] >> >>",
+    "<< /Type /OCG /Name (A) >>",
+    "<< /Type /OCG /Name (B) >>",
+  ]
+  writeFile(OutDir / "layers_baseoff.pdf", assemblePdf(objs))
+  var d = openDoc(readFile(OutDir / "layers_baseoff.pdf"))
+  doAssert d.docLayers().len == 2
+  doAssert d.docLayers()[0].on
+  doAssert not d.docLayers()[1].on
+
 writeInfoFull()
 writeInfoDates()
 writeOutlines()
 writePageLabels()
 writeAnnots()
 writeStructTree()
+writeLayers()
+writeLayersBaseOff()
 echo "wrote M15 fixtures"

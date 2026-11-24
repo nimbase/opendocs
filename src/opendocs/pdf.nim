@@ -104,6 +104,24 @@ export PdfAnnot, readAnnot, pageAnnots, docAnnots
 from pdf/structread import PdfStructElem, structTree
 export PdfStructElem, structTree
 
+from pdf/layers import PdfLayer, docLayers, layerOCGs
+export PdfLayer, docLayers, layerOCGs
+
+from pdf/organize import setPageRotation, setPageBox, deletePages,
+  appendPages, addOutline, setPageLabels, addLink, addInternalLink,
+  addTextAnnot
+export setPageRotation, setPageBox, deletePages, appendPages,
+  addOutline, setPageLabels, addLink, addInternalLink, addTextAnnot
+
+from pdf/draw import PdfColor, PdfColorKind, Path, PathCmd, FillOpts,
+  black, white, rgb, gray, cmyk, fillOp, strokeOp, moveTo, lineTo,
+  curveTo, close, addRect, pathOps, paintOps, clipOps, ellipsePath,
+  lineOps, rectOps, circleOps, ellipseOps
+export PdfColor, PdfColorKind, Path, PathCmd, FillOpts,
+  black, white, rgb, gray, cmyk, fillOp, strokeOp, moveTo, lineTo,
+  curveTo, close, addRect, pathOps, paintOps, clipOps, ellipsePath,
+  lineOps, rectOps, circleOps, ellipseOps
+
 from exports import ExportError, ImageFormat, ExportOptions, ExportPixels,
   encodeImage, saveImage, formatForPath, formatForExt
 export ExportError, ImageFormat, ExportOptions, ExportPixels,
@@ -178,6 +196,8 @@ type
     curFont: string
     curSize: float64
     title, author: string
+    creator, producer, keywords, creationDate, modDate, trapped,
+      xmpPacket: string
     nextImage: int
 
 const defaultMarginPt = 56.7 ## 20 mm working margin
@@ -332,6 +352,30 @@ proc setAuthor*(doc: var Pdf, author: string) =
   ## Document author for the trailer /Info dict.
   doc.author = author
 
+proc setCreator*(doc: var Pdf, creator: string) =
+  doc.creator = creator
+
+proc setProducer*(doc: var Pdf, producer: string) =
+  doc.producer = producer
+
+proc setKeywords*(doc: var Pdf, keywords: string) =
+  doc.keywords = keywords
+
+proc setCreationDate*(doc: var Pdf, d: string) =
+  ## Raw PDF date string (malformed reads back as ok=false).
+  doc.creationDate = d
+
+proc setModDate*(doc: var Pdf, d: string) =
+  doc.modDate = d
+
+proc setTrapped*(doc: var Pdf, trapped: string) =
+  if trapped notin ["", "True", "False", "Unknown"]:
+    pdfFail("trapped must be True, False or Unknown")
+  doc.trapped = trapped
+
+proc setXmpPacket*(doc: var Pdf, packet: string) =
+  doc.xmpPacket = packet
+
 proc newPage*(doc: var Pdf) =
   ## Finish the open page and start a fresh one.
   doc.flushPage()
@@ -414,6 +458,310 @@ proc textAt*(doc: var Pdf, text: string, x, y: float64,
         emit = drawCidLine(v.use, v.sf, x, y, doc.curFont, s, text)
       break
   doc.curContent.add(emit & "\n")
+
+type
+  Alignment* = enum
+    alignLeft, alignCenter, alignRight
+
+  TextStyle* = object
+    color*: PdfColor
+    hasColor*: bool
+    underline*: bool
+    strikeout*: bool
+    charSpacing*: float64
+    wordSpacing*: float64
+    rise*: float64
+    renderMode*: int
+    horizScale*: float64 ## percent, 100 = normal (Tz)
+
+proc styledPrefix(s: TextStyle): string =
+  result = ""
+  if s.hasColor:
+    result.add(s.color.fillOp() & "\n")
+  if s.charSpacing != 0.0:
+    result.add($s.charSpacing & " Tc\n")
+  if s.wordSpacing != 0.0:
+    result.add($s.wordSpacing & " Tw\n")
+  if s.rise != 0.0:
+    result.add($s.rise & " Ts\n")
+  if s.renderMode != 0:
+    if s.renderMode < 0 or s.renderMode > 7:
+      pdfFail("text render mode must be 0..7")
+    result.add($s.renderMode & " Tr\n")
+  if s.horizScale != 0.0 and s.horizScale != 100.0:
+    if s.horizScale <= 0.0 or s.horizScale > 1000.0:
+      pdfFail("horizontal scale must be positive")
+    result.add($s.horizScale & " Tz\n")
+
+proc lineWidthOf(doc: var Pdf, text: string, size: float64): float64 =
+  for k, v in doc.fonts.mpairs:
+    if k == doc.curFont:
+      if v.kind == fkBuiltin:
+        return builtinMeasure(text, size)
+      return measureText(v.sf, text, size)
+  pdfFail("unknown font '" & doc.curFont & "' (load it with loadFont)")
+
+proc setFillColor*(doc: var Pdf, c: PdfColor) =
+  ## Non-stroking color for following text and filled paths.
+  doc.curContent.add(c.fillOp() & "\n")
+
+proc setStrokeColor*(doc: var Pdf, c: PdfColor) =
+  ## Stroking color for following stroked paths.
+  doc.curContent.add(c.strokeOp() & "\n")
+
+proc setLineWidth*(doc: var Pdf, w: float64) =
+  if w != w or w == Inf or w == -Inf or w <= 0.0:
+    pdfFail("line width must be positive")
+  doc.curContent.add($w & " w\n")
+
+proc textRun*(doc: var Pdf, text: string, style: TextStyle,
+    x, y: float64) =
+  ## One absolute run with explicit style (no wrap, no cursor motion).
+  ## Underline/strikeout are thin filled rects over the measured width;
+  ## positions are heuristics documented here, not font metrics.
+  let s = doc.curSize
+  if s <= 0.0:
+    pdfFail("font size must be positive")
+  if not doc.fonts.hasKey(doc.curFont):
+    pdfFail("unknown font '" & doc.curFont & "' (load it with loadFont)")
+  let w = doc.lineWidthOf(text, s)
+  var emit = ""
+  for k, v in doc.fonts.mpairs:
+    if k == doc.curFont:
+      if v.kind == fkBuiltin:
+        discard builtinMeasure(text, s)
+        emit = drawTextLine(x, y, doc.curFont, s, text)
+      else:
+        emit = drawCidLine(v.use, v.sf, x, y, doc.curFont, s, text)
+      break
+  doc.curContent.add(styledPrefix(style) & emit & "\n")
+  if style.underline:
+    let uy = y - 1.5
+    doc.curContent.add("q " &
+      (if style.hasColor: style.color.fillOp() & " " else: "") &
+      $x & " " & $uy & " " & $w & " 0.8 re f Q\n")
+  if style.strikeout:
+    let sy = y + s * 0.3
+    doc.curContent.add("q " &
+      (if style.hasColor: style.color.fillOp() & " " else: "") &
+      $x & " " & $sy & " " & $w & " 0.8 re f Q\n")
+
+proc paragraphStyled*(doc: var Pdf, text: string, style: TextStyle,
+    align = alignLeft) =
+  ## Flowing paragraph like `paragraph` with style color and alignment.
+  ## Alignment is left/center/right; no justification in v1.
+  if text.len == 0:
+    doc.cursorY -= doc.curSize * 0.6
+    return
+  if not doc.fonts.hasKey(doc.curFont):
+    pdfFail("unknown font '" & doc.curFont & "' (load it with loadFont)")
+  let maxW = doc.pageW - 2.0 * doc.margin
+  var lines: seq[string] = @[]
+  var builtin = false
+  for k, v in doc.fonts.mpairs:
+    if k == doc.curFont:
+      if v.kind == fkBuiltin:
+        builtin = true
+        lines = builtinWrapText(text, doc.curSize, maxW)
+      else:
+        lines = wrapText(v.sf, text, doc.curSize, maxW)
+      break
+  doc.curContent.add(styledPrefix(style))
+  for line in lines:
+    if doc.cursorY < doc.margin + doc.curSize * 0.2:
+      doc.flushPage()
+      doc.curContent.add(styledPrefix(style))
+    let lw = doc.lineWidthOf(line, doc.curSize)
+    let x = case align
+      of alignLeft: doc.margin
+      of alignCenter: doc.margin + (maxW - lw) / 2.0
+      of alignRight: doc.margin + (maxW - lw)
+    var emit = ""
+    for k, v in doc.fonts.mpairs:
+      if k == doc.curFont:
+        if builtin:
+          discard builtinMeasure(line, doc.curSize)
+          emit = drawTextLine(x, doc.cursorY, doc.curFont, doc.curSize,
+            line)
+        else:
+          emit = drawCidLine(v.use, v.sf, x, doc.cursorY, doc.curFont,
+            doc.curSize, line)
+        break
+    doc.curContent.add(emit & "\n")
+    if style.underline or style.strikeout:
+      let uy = if style.underline: doc.cursorY - 1.5
+        else: doc.cursorY + doc.curSize * 0.3
+      doc.curContent.add("q " &
+        (if style.hasColor: style.color.fillOp() & " " else: "") &
+        $x & " " & $uy & " " & $lw & " 0.8 re f Q\n")
+    doc.cursorY -= doc.curSize * 1.2
+  doc.cursorY -= doc.curSize * 0.4
+
+proc line*(doc: var Pdf, x1, y1, x2, y2: float64,
+    width = 1.0, c = black()) =
+  ## Straight segment on the open page.
+  doc.curContent.add(lineOps(x1, y1, x2, y2, width, c) & "\n")
+
+proc rect*(doc: var Pdf, x, y, w, h: float64,
+    opts: FillOpts) =
+  ## Axis-aligned rectangle with explicit fill/stroke options.
+  doc.curContent.add(rectOps(x, y, w, h, opts) & "\n")
+
+proc circle*(doc: var Pdf, cx, cy, r: float64,
+    opts: FillOpts) =
+  doc.curContent.add(circleOps(cx, cy, r, opts) & "\n")
+
+proc ellipse*(doc: var Pdf, cx, cy, rx, ry: float64,
+    opts: FillOpts) =
+  doc.curContent.add(ellipseOps(cx, cy, rx, ry, opts) & "\n")
+
+proc stroke*(doc: var Pdf, p: Path, width = 1.0,
+    c = black()) =
+  doc.curContent.add(p.paintOps(FillOpts(hasFill: false,
+    hasStroke: true, stroke: c, lineWidth: width), width) & "\n")
+
+proc fill*(doc: var Pdf, p: Path, c: PdfColor,
+    evenOdd = false) =
+  doc.curContent.add(p.paintOps(FillOpts(hasFill: true, fill: c,
+    hasStroke: false, evenOdd: evenOdd)) & "\n")
+
+type
+  BorderLine* = enum
+    bdNone, bdSingle, bdDouble
+
+  Border* = object
+    line*: BorderLine
+    width*: float64
+    color*: PdfColor
+
+  Column* = object
+    width*: float64
+    align*: Alignment
+
+  Row* = object
+    cells*: seq[string]
+    style*: TextStyle
+    height*: float64 ## minimum row height, 0 = auto
+
+  TableStyle* = object
+    columns*: seq[Column]
+    border*: Border
+    headerRows*: int
+    cellPadding*: float64
+
+proc wrapCellText(doc: var Pdf, text: string, w, pad: float64): seq[
+    string] =
+  let avail = max(w - 2.0 * pad, 10.0)
+  var builtin = false
+  for k, v in doc.fonts.mpairs:
+    if k == doc.curFont:
+      if v.kind == fkBuiltin:
+        builtin = true
+      break
+  if builtin:
+    return builtinWrapText(text, doc.curSize, avail)
+  for k, v in doc.fonts.mpairs:
+    if k == doc.curFont:
+      return wrapText(v.sf, text, doc.curSize, avail)
+  pdfFail("unknown font '" & doc.curFont & "' (load it with loadFont)")
+
+proc tableRowHeight(doc: var Pdf, r: Row, style: TableStyle,
+    pad: float64): float64 =
+  var maxLines = 1
+  for i in 0 ..< min(r.cells.len, style.columns.len):
+    maxLines = max(maxLines, doc.wrapCellText(r.cells[i],
+      style.columns[i].width, pad).len)
+  max(r.height, float64(maxLines) * doc.curSize * 1.2 + 2.0 * pad)
+
+proc drawTableRow(doc: var Pdf, r: Row, style: TableStyle, topY,
+    totalW, pad: float64) =
+  var x = doc.margin
+  let h = doc.tableRowHeight(r, style, pad)
+  for i in 0 ..< style.columns.len:
+    let cw = style.columns[i].width
+    let txt = if i < r.cells.len: r.cells[i] else: ""
+    let wrapped = doc.wrapCellText(txt, cw, pad)
+    for li, ln in wrapped:
+      let lw = doc.lineWidthOf(ln, doc.curSize)
+      let tx = case style.columns[i].align
+        of alignLeft: x + pad
+        of alignCenter: x + (cw - lw) / 2.0
+        of alignRight: x + cw - pad - lw
+      let ty = topY - pad - doc.curSize * (float64(li) * 1.2 + 0.9)
+      var emit = ""
+      for k, v in doc.fonts.mpairs:
+        if k == doc.curFont:
+          if v.kind == fkBuiltin:
+            discard builtinMeasure(ln, doc.curSize)
+            emit = drawTextLine(tx, ty, doc.curFont, doc.curSize, ln)
+          else:
+            emit = drawCidLine(v.use, v.sf, tx, ty, doc.curFont,
+              doc.curSize, ln)
+          break
+      doc.curContent.add(styledPrefix(r.style) & emit & "\n")
+    x += cw
+  if style.border.line != bdNone:
+    let w = if style.border.width > 0.0: style.border.width else: 0.5
+    let y0 = topY - h
+    doc.curContent.add(lineOps(doc.margin, topY,
+      doc.margin + totalW, topY, w, style.border.color) & "\n")
+    doc.curContent.add(lineOps(doc.margin, y0,
+      doc.margin + totalW, y0, w, style.border.color) & "\n")
+    var vx = doc.margin
+    for c in style.columns:
+      doc.curContent.add(lineOps(vx, topY, vx, y0, w,
+        style.border.color) & "\n")
+      vx += c.width
+    doc.curContent.add(lineOps(vx, topY, vx, y0, w,
+      style.border.color) & "\n")
+    if style.border.line == bdDouble:
+      let off = w + 1.5
+      doc.curContent.add(lineOps(doc.margin, topY - off,
+        doc.margin + totalW, topY - off, w * 0.5,
+        style.border.color) & "\n")
+
+proc table*(doc: var Pdf, rows: seq[Row], style: TableStyle) =
+  ## Simple table writer: explicit column widths, ruling lines, header
+  ## repeat on page splits. No cell spanning, no nested tables, no
+  ## vertical text (timeboxed, documented here). Cell text uses the
+  ## document's current font/size with each row's TextStyle for color.
+  if style.columns.len == 0:
+    pdfFail("table needs at least one column")
+  if rows.len == 0:
+    return
+  for c in style.columns:
+    if c.width <= 0.0:
+      pdfFail("table column needs positive width")
+  if style.headerRows < 0 or style.headerRows > rows.len:
+    pdfFail("table headerRows out of range")
+  let pad = if style.cellPadding != 0.0: style.cellPadding else: 4.0
+  if pad < 0.0:
+    pdfFail("table cellPadding must not be negative")
+  var totalW = 0.0
+  for c in style.columns:
+    totalW += c.width
+  if totalW > doc.pageW - 2.0 * doc.margin + 1e-6:
+    pdfFail("table wider than the text column")
+  var idx = 0
+  var needHeader = false
+  while idx < rows.len:
+    let h = doc.tableRowHeight(rows[idx], style, pad)
+    if doc.cursorY - h < doc.margin:
+      doc.flushPage()
+      needHeader = style.headerRows > 0 and idx >= style.headerRows
+    let topY = doc.cursorY
+    doc.drawTableRow(rows[idx], style, topY, totalW, pad)
+    doc.cursorY = topY - h
+    inc idx
+    if needHeader:
+      needHeader = false
+      for hi in 0 ..< style.headerRows:
+        let hh = doc.tableRowHeight(rows[hi], style, pad)
+        if doc.cursorY - hh < doc.margin:
+          doc.flushPage()
+        let ht = doc.cursorY
+        doc.drawTableRow(rows[hi], style, ht, totalW, pad)
+        doc.cursorY = ht - hh
 
 # ---------------------------------------------------------------------------
 # Writer: images (file path, optional JPEG compress pass)
@@ -543,7 +891,10 @@ proc build*(doc: var Pdf): string =
       rvals.add(CosObj(kind: coDict, keys: xkeys, vals: xvals))
     discard b.addPage(pg.w, pg.h, cnum,
       CosObj(kind: coDict, keys: rkeys, vals: rvals))
-  b.setInfo(doc.title, doc.author)
+  b.setInfo(doc.title, doc.author, doc.creator, doc.producer,
+    doc.keywords, doc.creationDate, doc.modDate, doc.trapped)
+  if doc.xmpPacket.len > 0:
+    b.setXmpPacket(doc.xmpPacket)
   b.buildPdf()
 
 proc save*(doc: var Pdf, path: string) =

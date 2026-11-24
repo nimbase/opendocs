@@ -29,6 +29,7 @@ import image/codecs/pnm
 import image/codecs/tga
 import image/codecs/ico
 import image/codecs/qoi
+import image/codecs/j2k
 import image/codecs/heif/heif
 import image/codecs/farbfeld
 import image/codecs/hdr
@@ -337,6 +338,10 @@ proc decodeImageBytes*(data: string, path: string): DynamicImage =
   of fmtAvif:
     failImg("decode image '" & path & "'",
       "AVIF bitstream is not supported (no pure-Nim AV1 decoder)")
+  of fmtJp2:
+    let r = decodeJp2(buf)
+    if not r.ok: failImg("decode image '" & path & "'", r.err.msg)
+    r.value
 
 proc encodeJpegStr*(px: string, w, h, comps, quality: int,
     path: string): string =

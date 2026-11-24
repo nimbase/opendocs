@@ -134,10 +134,8 @@ proc copyPage*(b: var PdfBuilder, donor: var PdfDoc,
   ## Transplant donor page `index` (0-based, page-tree order) into
   ## `b`; returns the new page object number. The copy carries an
   ## explicit /MediaBox and /Resources, so it never depends on the
-  ## donor page tree.
-  if donor.crypt.present:
-    pdfFail("merge supports unencrypted donors only (page " & $index &
-      " of an encrypted file)")
+  ## donor page tree. Encrypted donors work when opened with the
+  ## password: `resolve` decrypts transparently before cloning.
   let pages = donor.pageRefs()
   if index < 0 or index >= pages.len:
     pdfFail("page index " & $index & " out of range (0.." &
