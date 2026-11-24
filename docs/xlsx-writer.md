@@ -123,6 +123,19 @@ hyperlinks incl. rels part, defined names with scopes).
   (`formatApplied` true); any nonzero style index renders bools as
   `TRUE`/`FALSE`. Style-free cells keep the exact W1 shape.
 
-See `tests/t_xlsx_write.nim` (26/26: W1 cells, W2 extras, W3 date/bool/
-custom formats, font/fill/border/alignment round-trip, dedupe, theme
-presence).
+- `openXlsxForEditBytes(data, opts) / openXlsxForEdit(path, opts)` (W4)
+  — hydrate an existing package into the builder for modify-and-resave:
+  cells (numbers verbatim, strings resolved to plain text, `t="d"` ISO
+  dates normalized to serials per excelize `getCellDate`, bools coerced
+  on `1`, errors carried, shared formulas flattened to plain formulas
+  with per-cell cached values, array/dataTable formulas refused loudly),
+  style tables verbatim (indices stay aligned), merges/cols/row
+  geometry/hyperlinks/defined names/docProps carried, source theme
+  carried byte-exact. `xl/calcChain.xml` always dropped (stale caches
+  must not survive an edit); chartsheets fail loudly (unrepresentable,
+  and silent sheet loss is worse); sheet `state` is unmodeled (the
+  reader does not parse it; sheets always emit visible).
+
+See `tests/t_xlsx_write.nim` (32/32: W1 cells, W2 extras, W3 styles,
+W4 built-file edits, LibreOffice round-trip with byte-exact theme,
+error/shared-formula fidelity, calcChain drop, chartsheet refusal).

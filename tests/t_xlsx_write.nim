@@ -285,6 +285,110 @@ suite "xlsx writer styles":
     expect XlsxError:
       doc.setRangeStyle("Sheet1", "ZZZ1", "A2", 0)
 
+func strToBytes(s: string): seq[byte] =
+  ## Test-only string -> bytes (no archive dependency).
+  result = newSeq[byte](s.len)
+  if s.len > 0:
+    copyMem(addr result[0], unsafeAddr s[0], s.len)
+
+suite "xlsx writer open-edit":
+  test "edit a built file, untouched data survives":
+    var doc = newXlsxDoc()
+    doc.setCellStr("Sheet1", "A1", "keep")
+    doc.setCellNum("Sheet1", "B2", 3.25)
+    doc.addMerge("Sheet1", "C1:D2")
+    doc.addDefinedName("MyName", "Sheet1!$A$1")
+    let di = doc.addStyle(XlsxCellStyle(numFmtCode: "0.00"))
+    doc.setCellNum("Sheet1", "C3", 1.0)
+    doc.setCellStyle("Sheet1", "C3", di)
+    doc.customProps["K"] = "V"
+    var ed = openXlsxForEditBytes(doc.saveXlsxBytes())
+    ed.setCellStr("Sheet1", "A1", "changed")
+    ed.setCellInt("Sheet1", "E5", 9)
+    let img = ed.saveXlsxBytes()
+    let f = openXlsxBytes(img)
+    defer: f.closeXlsx()
+    check f.getCellValue("Sheet1", "A1") == "changed"
+    check f.getCellValue("Sheet1", "B2") == "3.25"
+    check f.isMerged("Sheet1", "C2")
+    check f.getCellValue("Sheet1", "E5") == "9"
+    check f.getDefinedNames().len == 1
+    check f.getCustomProps()["K"] == "V"
+    check f.getCellStyle("Sheet1", "C3").numFmtId == 2
+    check f.getCellValue("Sheet1", "C3") == "1.00"
+
+  test "edit a LibreOffice file, props and theme survive":
+    var doc = openXlsxForEdit("tests/fixtures/xlsx/fixture1.xlsx")
+    check doc.sheets.len == 2
+    check doc.sheets[0].name == "Fruit"
+    check doc.sheets[1].name == "Second"
+    doc.setCellStr("Fruit", "A1", "edited")
+    let img = doc.saveXlsxBytes()
+    let f = openXlsxBytes(img)
+    defer: f.closeXlsx()
+    check f.getCellValue("Fruit", "A1") == "edited"
+    check f.getDocProps().language == "en-US" # core props carried
+    let arch0 = openZipBytes(strToBytes(
+      readFile("tests/fixtures/xlsx/fixture1.xlsx")))
+    let arch1 = openZipBytes(img)
+    check arch1.readEntry("xl/theme/theme1.xml") ==
+      arch0.readEntry("xl/theme/theme1.xml") # theme byte-exact
+
+  test "error cells and shared formulas survive":
+    var doc = newXlsxDoc()
+    doc.setCellError("Sheet1", "A1", "#DIV/0!")
+    doc.setCellFormulaValue("Sheet1", "A2", "1/0", 0.0)
+    var ed = openXlsxForEditBytes(doc.saveXlsxBytes())
+    let img = ed.saveXlsxBytes()
+    let f = openXlsxBytes(img)
+    defer: f.closeXlsx()
+    check f.getCellType("Sheet1", "A1") == ctyError
+    check f.getCellValue("Sheet1", "A1") == "#DIV/0!"
+    # Real shared formulas flatten to plain formulas with same values.
+    var ed2 = openXlsxForEdit("tests/fixtures/xlsx/shared_formula.xlsx")
+    let img2 = ed2.saveXlsxBytes()
+    let g = openXlsxBytes(img2)
+    defer: g.closeXlsx()
+    let h = openXlsx("tests/fixtures/xlsx/shared_formula.xlsx")
+    defer: h.closeXlsx()
+    for cell in ["C1", "C2", "C3", "B2", "D2", "D5", "D6", "E7", "E8",
+        "G9"]:
+      check g.getCellFormula("Shared", cell) ==
+        h.getCellFormula("Shared", cell)
+
+  test "calcChain dropped, unknown parts carried":
+    var doc = newXlsxDoc()
+    doc.setCellStr("Sheet1", "A1", "x")
+    doc.rawParts["xl/calcChain.xml"] = @[1'u8, 2, 3]
+    doc.rawParts["xl/drawings/drawing1.xml"] = @[9'u8, 9]
+    var ed = openXlsxForEditBytes(doc.saveXlsxBytes())
+    let img = ed.saveXlsxBytes()
+    let arch = openZipBytes(img)
+    check arch.findEntry("xl/calcChain.xml") < 0
+    check arch.readEntry("xl/drawings/drawing1.xml") == @[9'u8, 9]
+
+  test "chartsheets fail loudly instead of losing sheets":
+    var w = newZipWriter()
+    w.addFile("_rels/.rels", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>""")
+    w.addFile("xl/workbook.xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="Chart1" sheetId="1" r:id="rId1"/></sheets></workbook>""")
+    w.addFile("xl/_rels/workbook.xml.rels", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chartsheet" Target="chartsheets/sheet1.xml"/></Relationships>""")
+    expect XlsxError:
+      discard openXlsxForEditBytes(w.toBytes())
+
+  test "open-edit validation errors fail loudly":
+    var doc = newXlsxDoc()
+    doc.setCellStr("Sheet1", "A1", "x")
+    let idx = doc.addStyle(XlsxCellStyle(numFmtCode: "0.00"))
+    expect XlsxError:
+      doc.setCellStyle("Sheet1", "Missing", idx) # absent cell
+    expect XlsxError:
+      doc.setCellStyle("Nope", "A1", idx) # absent sheet
+    expect XlsxError:
+      doc.setCellStyle("Sheet1", "A1", 99) # bad index
+
 suite "xlsx writer sheet extras":
   test "merges round-trip with anchor values":
     var doc = newXlsxDoc()

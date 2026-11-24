@@ -13,9 +13,10 @@
 ##
 ## Coverage: W1 fresh build (all five cell types) plus W2 sheet extras
 ## (merges, column ranges, row geometry, hyperlinks with sheet `.rels`,
-## defined names). Styles (W3) and open-edit (W4) remain future work:
-## all cells still write style `0`, and `rawParts` carry-through is
-## injection-tested only.
+## defined names), W3 styles (cellXfs dedupe, builtin + custom number
+## formats, always-on minimal theme), and W4 open-edit
+## (`openXlsxForEdit` hydrating files into the builder with `rawParts`
+## carry-through minus the calc chain).
 ##
 ## Model mirrors `docx/writer`: `XlsxDoc` owns every modeled value,
 ## `buildPackage` regenerates modeled parts, `rawParts` re-emit
@@ -41,8 +42,15 @@
 ##   minimal `fmtScheme`/`fontScheme` shape as the docx writer). The
 ##   reader resolves all style colors through the theme (a missing theme
 ##   means no color at all), so conditional emission would silently drop
-##   style colors on style-free saves that later gain raw-part styles. Content types and rels are consistent with the
-##   omission.
+##   style colors. Open-edit carries the source theme byte-exact, so
+##   theme-indexed colors survive.
+## - Open-edit normalizations (all documented in `hydrateCell`): numbers
+##   keep stored text verbatim; `t="d"` ISO dates become serials
+##   (excelize `getCellDate` parity); bools coerce on `"1"`; rich-text
+##   runs flatten to plain text; shared formulas flatten to plain
+##   formulas with per-cell cached values; array/dataTable formulas and
+##   chartsheets fail loudly rather than corrupt; `xl/calcChain.xml` is
+##   always dropped (hosts recompute on load).
 ## - Zip entry timestamps come from `opendocs/zip` (`now().utc()`), so
 ##   two saves of the same model differ byte-wise. Round-trip tests
 ##   compare through the reader, never byte-wise (same as the docx
@@ -62,12 +70,15 @@
 
 type
   XlsxCellKind* = enum
-    ## Stored cell kinds for the W1 builder (all five user-facing types).
+    ## Stored cell kinds for the builder. W1 covers the five user-facing
+    ## types; W4 adds errors so open-edit round-trips files containing
+    ## cached formula errors (`t="e"`).
     wckString
     wckNumber
     wckBool
     wckDate
     wckFormula
+    wckError
 
   XlsxWCell* = object
     ## One builder cell. `styleIdx` is reserved for W3 styles; W1 always
@@ -82,6 +93,8 @@ type
       formula*: string
       cachedVal*: string ## "" = no `<v>` (recalc on load)
       cachedIsStr*: bool ## true -> `t="str"`, false -> numeric/no `t`
+    of wckError:
+      errText*: string ## `t="e"` body (`#DIV/0!`, ...), verbatim
 
   XlsxWSheet* = object
     ## Builder sheet: name plus sparse cell map. Key packs a coordinate
@@ -139,6 +152,7 @@ type
     styleNumFmtIds*: Table[string, int] ## custom code -> id (>= 164)
     styleNumFmtOrder*: seq[string] ## custom codes in allocation order
     styleXfs*: seq[XlsxXf] ## index 0 = default; added styles never dedupe to 0
+    themeRaw*: seq[byte] ## source `xl/theme/theme1.xml` verbatim (W4 fidelity)
     rawParts*: Table[string, seq[byte]] ## unmodeled carry-through (W4)
 
 const
@@ -378,6 +392,12 @@ proc setCellInt*(doc: var XlsxDoc, sheet, cellRef: string, value: int64) =
 proc setCellBool*(doc: var XlsxDoc, sheet, cellRef: string, value: bool) =
   ## Boolean cell (`t="b"`, `1`/`0`).
   doc.putCell(sheet, cellRef, XlsxWCell(kind: wckBool, boolVal: value))
+
+proc setCellError*(doc: var XlsxDoc, sheet, cellRef, errText: string) =
+  ## Error cell (`t="e"`, e.g. `#DIV/0!`). Empty text fails loudly.
+  if errText == "":
+    raise newException(XlsxError, "error text is empty")
+  doc.putCell(sheet, cellRef, XlsxWCell(kind: wckError, errText: errText))
 
 proc setCellDate*(doc: var XlsxDoc, sheet, cellRef: string,
     dt: DateTime) =
@@ -744,6 +764,10 @@ proc writeCell(e: var XlsxEmit, doc: var XlsxDoc, col, row: int,
     e.elemNode("f", cell.formula)
     if cell.cachedVal != "" or cell.cachedIsStr:
       e.elemNode("v", cell.cachedVal)
+    e.closeTag("c")
+  of wckError:
+    e.openTag("c", base & xlsxAttr("t", "e"))
+    e.elemNode("v", cell.errText)
     e.closeTag("c")
 
 proc writeSheetXml(e: var XlsxEmit, doc: var XlsxDoc, si: int) =
@@ -1317,9 +1341,14 @@ proc buildParts(doc: var XlsxDoc, e: var XlsxEmit):
   e.writeStylesXml(doc)
   result.add ("xl/styles.xml", e.toBytes())
   e.clear()
-  e.writeThemeXml()
-  result.add ("xl/theme/theme1.xml", e.toBytes())
-  e.clear()
+  if doc.themeRaw.len > 0:
+    # Carried source theme (open-edit fidelity): byte-exact so
+    # theme-indexed colors keep resolving against the original palette.
+    result.add ("xl/theme/theme1.xml", doc.themeRaw)
+  else:
+    e.writeThemeXml()
+    result.add ("xl/theme/theme1.xml", e.toBytes())
+    e.clear()
   if doc.sst.len > 0:
     e.writeSharedStringsXml(doc)
     result.add ("xl/sharedStrings.xml", e.toBytes())
@@ -1458,3 +1487,208 @@ proc saveXlsx*(doc: var XlsxDoc, path: string,
   defer: close(f)
   if img.len > 0 and writeBytes(f, img, 0, img.len) != img.len:
     raise newException(XlsxError, "short write: " & path)
+
+# ------------------------------------------------------- W4: open-edit
+
+proc hydrateCell(doc: var XlsxDoc, f: XlsxFile, sheet: string, c: Cell) =
+  ## One reader cell into the builder. Plain values copy verbatim
+  ## (numbers keep their stored text, no `formatCellFloat` pass);
+  ## shared/inline strings resolve to plain text (rich runs flatten,
+  ## `siText` parity); `t="d"` ISO dates normalize to serials (excelize
+  ## `getCellDate` parity); shared formulas flatten to plain formulas
+  ## with per-cell cached values (the anchor translation is already the
+  ## computed text); array/dataTable formulas fail loudly (flattening
+  ## them would silently change calc semantics); out-of-range style
+  ## indices fail loudly.
+  let r = joinCellName(c.col, c.row)
+  if c.styleIdx < 0 or c.styleIdx >= doc.styleXfs.len:
+    raise newException(XlsxError,
+      "style index out of range in " & sheet & "!" & r & ": " &
+      $c.styleIdx)
+  let si = doc.sheetIdx[sheet.toLowerAscii()]
+  template put(cell: XlsxWCell) =
+    doc.sheets[si].cells[cellKey(c.col, c.row)] = cell
+  if c.hasFormula:
+    case c.formula.ftype
+    of "", "shared":
+      let text =
+        if c.formula.ftype == "shared":
+          # Anchors and members alike expand through the anchor
+          # translation (members carry no text of their own); dangling
+          # `si` values expand to "" (reader parity).
+          try: f.getCellFormula(sheet, r)
+          except XlsxError as err:
+            raise newException(XlsxError,
+              "cannot expand shared formula in " & sheet & "!" & r &
+              ": " & err.msg)
+        else:
+          c.formula.content
+      let isStr = c.cellType == ctyFormula
+      put XlsxWCell(kind: wckFormula, styleIdx: c.styleIdx,
+        formula: text, cachedVal: c.raw, cachedIsStr: isStr)
+    else:
+      raise newException(XlsxError,
+        "unsupported formula type in " & sheet & "!" & r & ": " &
+        c.formula.ftype)
+    return
+  case c.cellType
+  of ctySharedString:
+    if c.raw == "":
+      put XlsxWCell(kind: wckString, styleIdx: c.styleIdx, strVal: "")
+    else:
+      let idx =
+        try: parseInt(c.raw)
+        except ValueError:
+          raise newException(XlsxError,
+            "bad shared string index in " & sheet & "!" & r)
+      let text =
+        try: f.sharedString(idx)
+        except XlsxError as err:
+          raise newException(XlsxError,
+            "cannot resolve string in " & sheet & "!" & r & ": " & err.msg)
+      let t = truncateUtf16(text, MaxCellChars)
+      discard doc.internString(t)
+      inc doc.sstTotal
+      put XlsxWCell(kind: wckString, styleIdx: c.styleIdx, strVal: t)
+  of ctyInlineString:
+    let t = truncateUtf16(c.inlineText, MaxCellChars)
+    discard doc.internString(t)
+    inc doc.sstTotal
+    put XlsxWCell(kind: wckString, styleIdx: c.styleIdx, strVal: t)
+  of ctyBool:
+    put XlsxWCell(kind: wckBool, styleIdx: c.styleIdx,
+      boolVal: c.raw == "1")
+  of ctyDate:
+    let (ok, serial) = isoToSerial(c.raw)
+    if not ok:
+      raise newException(XlsxError,
+        "bad ISO date in " & sheet & "!" & r & ": " & c.raw)
+    put XlsxWCell(kind: wckDate, styleIdx: c.styleIdx,
+      dateSerial: parseFloat(serial))
+  of ctyError:
+    put XlsxWCell(kind: wckError, styleIdx: c.styleIdx, errText: c.raw)
+  else:
+    put XlsxWCell(kind: wckNumber, styleIdx: c.styleIdx, numRaw: c.raw)
+
+proc openXlsxForEditBytes*(data: seq[byte],
+    opts: XlsxReadOpts = XlsxReadOpts()): XlsxDoc =
+  ## Open an existing package into the owned builder model for
+  ## modify-and-resave. Cells hydrate per `hydrateCell`; style tables
+  ## copy verbatim (indices stay aligned); merges/cols/row geometry/
+  ## hyperlinks/defined names/docProps copy over; the source theme (when
+  ## present) carries byte-exact so theme-indexed colors survive.
+  ## Unmodeled parts carry as `rawParts` except `xl/calcChain.xml`,
+  ## which is always dropped (stale caches must never survive an edit;
+  ## hosts recompute on load). Chartsheets (sheets without a worksheet
+  ## part) fail loudly: the builder cannot represent them, and silent
+  ## sheet loss is worse than refusal. Sheet `state` is unmodeled (the
+  ## reader does not parse it; sheets always emit visible).
+  let f = openXlsxBytes(data, opts)
+  try:
+    result = XlsxDoc(date1904: f.date1904,
+      sheetIdx: initTable[string, int](),
+      sstIndex: initTable[string, int](),
+      customProps: initTable[string, string](),
+      styleNumFmtIds: initTable[string, int](),
+      rawParts: initTable[string, seq[byte]]())
+    # Style tables verbatim (seed-compatible: file tables replace the
+    # blank seeds wholesale, so indices align with hydrated cells).
+    result.styleFonts = f.styles.fonts
+    if result.styleFonts.len == 0:
+      result.styleFonts.add XlsxFont(name: "Calibri", size: 11.0,
+        family: 2, hasFamily: true)
+    result.styleFills = f.styles.fills
+    if result.styleFills.len == 0:
+      result.styleFills.add XlsxFill(kind: "pattern", pattern: "none")
+      result.styleFills.add XlsxFill(kind: "pattern", pattern: "gray125")
+    result.styleBorders = f.styles.borders
+    if result.styleBorders.len == 0:
+      result.styleBorders.add XlsxBorder()
+    for id, code in f.styles.numFmts:
+      if builtinNumFmtId(code) < 0:
+        result.styleNumFmtIds[code] = id
+        result.styleNumFmtOrder.add code
+    result.styleNumFmtOrder.sort()
+    result.styleXfs = f.styles.cellXfs
+    if result.styleXfs.len == 0:
+      result.styleXfs.add XlsxXf(numFmtId: 0, fontId: 0, fillId: 0,
+        borderId: 0, xfId: 0)
+    # Sheets (workbook order, ids preserved).
+    for name in f.sheetOrder:
+      if not f.sheetParts.hasKey(name):
+        raise newException(XlsxError,
+          "cannot edit chartsheet or dangling sheet: " & name)
+      result.sheets.add XlsxWSheet(name: name,
+        sheetId: f.sheetIds.getOrDefault(name),
+        cells: initTable[int, XlsxWCell](),
+        rowHeights: initTable[int, float](),
+        rowHidden: initTable[int, bool]())
+      result.sheetIdx[name.toLowerAscii()] = result.sheets.high
+    for name in f.sheetOrder:
+      let s = f.getSheet(name)
+      for r in s.rows:
+        if r.height != -1.0:
+          result.sheets[result.sheetIdx[name.toLowerAscii()]].rowHeights[
+            r.r] = r.height
+        if r.hidden:
+          result.sheets[result.sheetIdx[name.toLowerAscii()]].rowHidden[
+            r.r] = true
+      for c in s.cols:
+        result.sheets[result.sheetIdx[name.toLowerAscii()]].cols.add c
+      for m in s.merges:
+        result.sheets[result.sheetIdx[name.toLowerAscii()]].merges.add m
+      for h in s.hyperlinks:
+        result.sheets[result.sheetIdx[name.toLowerAscii()]].hyperlinks.add h
+      for row in s.rows:
+        for c in row.cells:
+          result.hydrateCell(f, name, c)
+    result.definedNames = f.definedNames
+    result.coreProps = f.getDocProps()
+    let app = f.getAppProps()
+    if app.hasKey("Company"): result.appCompany = app["Company"]
+    result.customProps = f.getCustomProps()
+    if f.hasPart("xl/theme/theme1.xml"):
+      result.themeRaw = f.readBytesPart("xl/theme/theme1.xml")
+    # Carry-through: every part not regenerated below rides verbatim,
+    # except the calc chain (always stale after an edit boundary).
+    let wbPath = workbookPath(f)
+    let slash = wbPath.rfind('/')
+    let wbRels =
+      if slash < 0: "_rels/" & wbPath & ".rels"
+      else: wbPath[0 .. slash] & "_rels/" & wbPath[slash + 1 .. ^1] &
+        ".rels"
+    var modeled = initTable[string, bool]()
+    modeled["[Content_Types].xml"] = true
+    modeled["_rels/.rels"] = true
+    modeled[wbPath] = true
+    modeled[wbRels] = true
+    modeled["xl/styles.xml"] = true
+    modeled["xl/theme/theme1.xml"] = true
+    if result.sst.len > 0 or f.hasPart("xl/sharedStrings.xml"):
+      modeled["xl/sharedStrings.xml"] = true
+    modeled["docProps/core.xml"] = true
+    modeled["docProps/app.xml"] = true
+    modeled["docProps/custom.xml"] = true
+    for sname in f.sheetOrder:
+      modeled[f.sheetParts[sname]] = true
+      modeled[sheetRelsPath(f.sheetParts[sname])] = true
+    for e in f.archive.entries:
+      if modeled.hasKey(e.name): continue
+      if e.name == "xl/calcChain.xml": continue
+      result.rawParts[e.name] = f.readBytesPart(e.name)
+  finally:
+    f.closeXlsx()
+
+proc openXlsxForEdit*(path: string,
+    opts: XlsxReadOpts = XlsxReadOpts()): XlsxDoc =
+  ## File-backed `openXlsxForEditBytes`. Portable temp rules apply to
+  ## the read spill dir (see `XlsxReadOpts`).
+  var fh: File
+  if not open(fh, path, fmRead):
+    raise newException(XlsxError, "cannot open file: " & path)
+  defer: close(fh)
+  let size = getFileSize(fh).int
+  var data = newSeq[byte](size)
+  if size > 0 and readBytes(fh, data, 0, size) != size:
+    raise newException(XlsxError, "short read: " & path)
+  openXlsxForEditBytes(data, opts)

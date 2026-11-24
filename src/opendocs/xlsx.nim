@@ -21,11 +21,10 @@ import opendocs/zip
 
 # Implementation split: model, shared helpers, cell refs, stylesheet,
 # number/date formatting, workbook, shared strings, sheets, rich text,
-# docProps, writer emit + builder, and the open flow live in `xlsx/`
-# but are included here, so module `xlsx` keeps one canonical home for
-# every symbol. Order matters: helpers before part readers, writer
-# after the reader model (it reuses cell refs, date mapping and
-# docProps types), open flow last.
+# docProps, and the open flow live in `xlsx/` but are included here, so
+# module `xlsx` keeps one canonical home for every symbol. Order matters:
+# helpers before part readers, open flow before writer emit + builder
+# (open-edit hydrates through the reader API), writer last.
 include xlsx/types
 include xlsx/base
 include xlsx/cell
@@ -40,6 +39,6 @@ include xlsx/sharedstrings
 include xlsx/sheet
 include xlsx/richtext
 include xlsx/docprops
+include xlsx/reader
 include xlsx/emit
 include xlsx/write
-include xlsx/reader
