@@ -318,7 +318,8 @@ d.close()
 - [ ] Legacy DOC read + write (binary Word format)
 - [ ] ODT read + write
 - [ ] RTF read + write
-- [ ] TXT read + write
+- [x] TXT read + write (encoding detect, BOM, line endings, mmap, utilities)
+- [ ] Legacy DOC read + write (binary Word format)
 - [x] XLSX reader Phase A (lazy sheets, shared strings, raw values, A1 utils; xlsx/xlsm/xltx/xltm/xlam open flow)
 - [x] XLSX reader Phase B (eager styles, builtin formats, dates, 576-cell excelize oracle parity)
 - [x] XLSX reader Phase C (rich text, hyperlinks, merges, dimensions, formulas, docProps)
