@@ -39,8 +39,36 @@ doc.saveXlsx("out.xlsx")
 - `saveXlsxBytes(doc, opts) / saveXlsx(doc, path, opts)` — full package
   assembly. Modeled parts regenerate; `rawParts` re-emit byte-exact
   except superseded (same name or per-part `.rels` for a regenerated
-  part); `_rels/.rels` and `[Content_Types].xml` always regenerate.
+  part, including stale sheet `.rels` under `xl/worksheets/_rels/`);
+  `_rels/.rels` and `[Content_Types].xml` always regenerate.
   `ZipError` surfaces as `XlsxError`.
+
+## Sheet extras (W2)
+
+- `addMerge(doc, sheet, ref)` — merged range (`A1:B2`, absolutes and
+  reversed corners accepted). Invalid refs and overlaps with an earlier
+  merge fail loudly (the reader tolerates overlaps file-order-first;
+  the builder refuses to author ambiguity). Merges grow the emitted
+  `dimension` even when their cells are empty.
+- `setColWidth(doc, sheet, min, max, width)` / `setColHidden(...)` —
+  column ranges appended in call order (overlaps read back last-wins,
+  reader parity). Non-positive widths fail (hide instead).
+- `setRowHeight(doc, sheet, row, height)` / `setRowHidden(...)` —
+  per-row geometry; rows with props but no cells still emit an empty
+  `<row>`. Non-positive heights fail.
+- `addHyperlink(doc, sheet, ref, target, location, display, tooltip)` —
+  cell or range ref. External targets serialize through the sheet's
+  `.rels` (`TargetMode="External"`, `rIdH1...` minting); internal
+  `location`-only jumps inline. Both-empty fails; dangling `r:id`s are
+  never authored (reader tolerates, builder refuses).
+- `addDefinedName(doc, name, refersTo, scope, hidden, comment)` —
+  workbook names. Blank/overlong/cell-ref-like names and unknown scopes
+  fail; one leading `=` on `refersTo` is stripped (reader normalization).
+  Workbook scope emits no `localSheetId`; sheet scope emits the 0-based
+  workbook-order index.
+
+See `tests/t_xlsx_write.nim` (20/20: W1 cells plus merges, geometry,
+hyperlinks incl. rels part, defined names with scopes).
 
 ## Pre-W3 behavior (deliberate)
 
@@ -70,5 +98,5 @@ doc.saveXlsx("out.xlsx")
   the temp parent (default system temp). Same portable-temp rules as the
   reader (no hardcoded `/tmp`).
 
-See `tests/t_xlsx_write.nim` (12/12: all five types, dedupe, validation,
-truncation, spill, carry-through, docProps, file save).
+See `tests/t_xlsx_write.nim` (20/20: W1 cells plus W2 merges, geometry,
+hyperlinks incl. rels part, defined names with scopes).

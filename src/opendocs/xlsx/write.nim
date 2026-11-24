@@ -7,8 +7,15 @@
 ## Spreadsheet writer: owned builder model plus full package assembly.
 ##
 ## Behavioral oracle: excelize `cell.go` setters, `sheet.go` `NewFile` /
-## `NewSheet`, and `templates.go` blank-part shapes. Clean-room: edge
-## handling and oracle shapes observed, all bytes authored here.
+## `NewSheet`, `merge.go`, `col.go`, hyperlink rels, `templates.go`
+## blank-part shapes. Clean-room: edge handling and oracle shapes
+## observed, all bytes authored here.
+##
+## Coverage: W1 fresh build (all five cell types) plus W2 sheet extras
+## (merges, column ranges, row geometry, hyperlinks with sheet `.rels`,
+## defined names). Styles (W3) and open-edit (W4) remain future work:
+## all cells still write style `0`, and `rawParts` carry-through is
+## injection-tested only.
 ##
 ## Model mirrors `docx/writer`: `XlsxDoc` owns every modeled value,
 ## `buildPackage` regenerates modeled parts, `rawParts` re-emit
@@ -76,10 +83,18 @@ type
 
   XlsxWSheet* = object
     ## Builder sheet: name plus sparse cell map. Key packs a coordinate
-    ## as `(row - 1) * XlsxMaxCols + col` (fits int64, unique, sortable).
+    ## as `(row - 1) * XlsxMaxCols + (col - 1)` (fits int64, unique,
+    ## sortable). W2 extras (merges, column ranges, row geometry,
+    ## hyperlinks) reuse the reader model types so round-trips compare
+    ## equal through the reader.
     name*: string
     sheetId*: int
     cells*: Table[int, XlsxWCell]
+    merges*: seq[XlsxMerge]
+    cols*: seq[XlsxCol]
+    rowHeights*: Table[int, float] ## explicit height by 1-based row
+    rowHidden*: Table[int, bool] ## explicit hidden rows
+    hyperlinks*: seq[XlsxHyperlink]
 
   XlsxWriteOpts* = object
     ## Spill policy for large saves (mirrors `XlsxReadOpts` caps style).
@@ -98,6 +113,7 @@ type
     coreProps*: XlsxDocProps
     appCompany*: string
     customProps*: Table[string, string]
+    definedNames*: seq[XlsxDefinedName]
     rawParts*: Table[string, seq[byte]] ## unmodeled carry-through (W4)
 
 const
@@ -253,7 +269,9 @@ proc newXlsxDoc*(date1904 = false): XlsxDoc =
     customProps: initTable[string, string](),
     rawParts: initTable[string, seq[byte]]())
   result.sheets.add XlsxWSheet(name: "Sheet1", sheetId: 1,
-    cells: initTable[int, XlsxWCell]())
+    cells: initTable[int, XlsxWCell](),
+    rowHeights: initTable[int, float](),
+    rowHidden: initTable[int, bool]())
   result.sheetIdx["sheet1"] = 0
 
 proc sheetIndex(doc: XlsxDoc, sheet: string): int =
@@ -272,7 +290,9 @@ proc addSheet*(doc: var XlsxDoc, name: string) =
   for s in doc.sheets:
     if s.sheetId > maxId: maxId = s.sheetId
   doc.sheets.add XlsxWSheet(name: name, sheetId: maxId + 1,
-    cells: initTable[int, XlsxWCell]())
+    cells: initTable[int, XlsxWCell](),
+    rowHeights: initTable[int, float](),
+    rowHidden: initTable[int, bool]())
   doc.sheetIdx[name.toLowerAscii()] = doc.sheets.high
 
 proc internString(doc: var XlsxDoc, value: string): int =
@@ -374,6 +394,126 @@ proc setCellFormulaStr*(doc: var XlsxDoc, sheet, cellRef, formula,
     formula: formula,
     cachedVal: truncateUtf16(cached, MaxCellChars), cachedIsStr: true))
 
+# ------------------------------------------------------- W2: sheet extras
+
+proc addMerge*(doc: var XlsxDoc, sheet, mergeRef: string) =
+  ## Declare a merged range (`A1:B2`, absolutes and reversed corners
+  ## accepted, same normalization as the reader). Invalid refs and
+  ## ranges overlapping an earlier merge fail loudly with `XlsxError`
+  ## (the reader tolerates overlaps file-order-first; the builder
+  ## refuses to author ambiguity).
+  let (firstCol, firstRow, lastCol, lastRow) =
+    parseMergeBounds(mergeRef, "addMerge")
+  let idx = doc.sheetIndex(sheet)
+  for m in doc.sheets[idx].merges:
+    if firstCol <= m.lastCol and lastCol >= m.firstCol and
+        firstRow <= m.lastRow and lastRow >= m.firstRow:
+      raise newException(XlsxError,
+        "overlapping merge range: " & mergeRef)
+  doc.sheets[idx].merges.add XlsxMerge(`ref`: mergeRef,
+    firstRow: firstRow, lastRow: lastRow, firstCol: firstCol,
+    lastCol: lastCol)
+
+proc setColWidth*(doc: var XlsxDoc, sheet: string, minCol, maxCol: int,
+    width: float) =
+  ## Explicit column width over an inclusive range. Appended in call
+  ## order; overlapping ranges read back last-wins (reader parity).
+  ## Non-positive widths fail loudly (hide via `setColHidden`).
+  if minCol < 1 or maxCol < 1 or minCol > XlsxMaxCols or
+      maxCol > XlsxMaxCols or minCol > maxCol:
+    raise newException(XlsxError,
+      "column range out of range: " & $minCol & "-" & $maxCol)
+  if width <= 0.0:
+    raise newException(XlsxError,
+      "column width must be positive: " & $width)
+  let idx = doc.sheetIndex(sheet)
+  doc.sheets[idx].cols.add XlsxCol(min: minCol, max: maxCol,
+    width: width, hasWidth: true)
+
+proc setColHidden*(doc: var XlsxDoc, sheet: string, minCol, maxCol: int,
+    hidden = true) =
+  ## Hidden flag over an inclusive column range (appended, last-wins).
+  if minCol < 1 or maxCol < 1 or minCol > XlsxMaxCols or
+      maxCol > XlsxMaxCols or minCol > maxCol:
+    raise newException(XlsxError,
+      "column range out of range: " & $minCol & "-" & $maxCol)
+  let idx = doc.sheetIndex(sheet)
+  doc.sheets[idx].cols.add XlsxCol(min: minCol, max: maxCol, hidden: hidden)
+
+proc setRowHeight*(doc: var XlsxDoc, sheet: string, row: int,
+    height: float) =
+  ## Explicit row height. Non-positive heights fail loudly.
+  if row < 1 or row > XlsxMaxRows:
+    raise newException(XlsxError, "row out of range: " & $row)
+  if height <= 0.0:
+    raise newException(XlsxError,
+      "row height must be positive: " & $height)
+  let idx = doc.sheetIndex(sheet)
+  doc.sheets[idx].rowHeights[row] = height
+
+proc setRowHidden*(doc: var XlsxDoc, sheet: string, row: int,
+    hidden = true) =
+  ## Hidden flag for one row.
+  if row < 1 or row > XlsxMaxRows:
+    raise newException(XlsxError, "row out of range: " & $row)
+  let idx = doc.sheetIndex(sheet)
+  doc.sheets[idx].rowHidden[row] = hidden
+
+proc addHyperlink*(doc: var XlsxDoc, sheet, cellRef, target: string,
+    location = "", display = "", tooltip = "") =
+  ## Hyperlink over a cell or range (`parseMergeBounds` validation, so
+  ## ranges accepted). External links (`target`) serialize through the
+  ## sheet's `.rels` (`TargetMode="External"`, `rIdH1...` minting);
+  ## internal jumps (`location`, no `target`) inline the destination.
+  ## Both empty fails loudly; unknown sheets fail loudly. A dangling
+  ## `r:id` is never authored (the reader tolerates them, the builder
+  ## refuses to).
+  discard parseMergeBounds(cellRef, "addHyperlink")
+  if target == "" and location == "":
+    raise newException(XlsxError,
+      "hyperlink needs a target or location: " & cellRef)
+  let idx = doc.sheetIndex(sheet)
+  doc.sheets[idx].hyperlinks.add XlsxHyperlink(cell: cellRef,
+    target: target, location: location, display: display,
+    tooltip: tooltip)
+
+proc addDefinedName*(doc: var XlsxDoc, name, refersTo: string,
+    scope = "Workbook", hidden = false, comment = "") =
+  ## Workbook defined name. Empty/overlong names, names that parse as a
+  ## cell reference, and unknown scopes fail loudly. One leading `=` on
+  ## `refersTo` is stripped (the same normalization the reader applies);
+  ## an empty remainder fails loudly.
+  if name == "":
+    raise newException(XlsxError, "defined name is blank")
+  if utf16Units(name) > 255:
+    raise newException(XlsxError,
+      "defined name exceeds 255 characters: " & name)
+  var isCellRef = true
+  try:
+    discard splitCellRef(name)
+  except XlsxError:
+    isCellRef = false
+  if isCellRef:
+    raise newException(XlsxError,
+      "defined name must not be a cell reference: " & name)
+  var canonScope = scope
+  if scope != "Workbook":
+    # Canonical sheet name (case-insensitive, reader parity).
+    var found = ""
+    for s in doc.sheets:
+      if s.name.cmpIgnoreCase(scope) == 0:
+        found = s.name
+        break
+    if found == "":
+      raise newException(XlsxError, "unknown sheet: " & scope)
+    canonScope = found
+  var target = refersTo
+  if target.startsWith("="): target = target[1 .. ^1]
+  if target == "":
+    raise newException(XlsxError, "defined name target is empty")
+  doc.definedNames.add XlsxDefinedName(name: name, refersTo: target,
+    scope: canonScope, hidden: hidden, comment: comment)
+
 # ------------------------------------------------------------- serialization
 
 proc sheetBounds(s: XlsxWSheet): tuple[found: bool, minCol, minRow,
@@ -389,6 +529,16 @@ proc sheetBounds(s: XlsxWSheet): tuple[found: bool, minCol, minRow,
       result.minRow = min(result.minRow, row)
       result.maxCol = max(result.maxCol, col)
       result.maxRow = max(result.maxRow, row)
+  for m in s.merges: # a merge range counts as used even when empty
+    for (col, row) in [(m.firstCol, m.firstRow), (m.lastCol, m.lastRow)]:
+      if first:
+        result = (true, col, row, col, row)
+        first = false
+      else:
+        result.minCol = min(result.minCol, col)
+        result.minRow = min(result.minRow, row)
+        result.maxCol = max(result.maxCol, col)
+        result.maxRow = max(result.maxRow, row)
 
 proc writeCell(e: var XlsxEmit, doc: var XlsxDoc, col, row: int,
     cell: XlsxWCell) =
@@ -442,21 +592,84 @@ proc writeSheetXml(e: var XlsxEmit, doc: var XlsxDoc, si: int) =
     xlsxAttr("workbookViewId", "0"))
   e.closeTag("sheetViews")
   e.emptyTag("sheetFormatPr", xlsxAttr("defaultRowHeight", "15"))
+  if s.cols.len > 0:
+    e.openTag("cols")
+    for c in s.cols:
+      var attrs = xlsxAttr("min", $c.min) & xlsxAttr("max", $c.max)
+      if c.hasWidth: attrs.add xlsxAttr("width", $c.width)
+      if c.hidden: attrs.add xlsxAttr("hidden", "1")
+      if c.bestFit: attrs.add xlsxAttr("bestFit", "1")
+      if c.customWidth: attrs.add xlsxAttr("customWidth", "1")
+      e.emptyTag("col", attrs)
+    e.closeTag("cols")
   e.openTag("sheetData")
-  var keys: seq[int] = @[]
-  for k in s.cells.keys: keys.add k
-  keys.sort()
-  var curRow = -1
-  for key in keys:
-    let (col, row) = keyColRow(key)
-    if row != curRow:
-      if curRow != -1: e.closeTag("row")
-      e.openTag("row", xlsxAttr("r", $row))
-      curRow = row
-    e.writeCell(doc, col, row, s.cells[key])
-  if curRow != -1: e.closeTag("row")
+  var rowSet = initTable[int, bool]()
+  for k in s.cells.keys:
+    rowSet[keyColRow(k)[1]] = true
+  for r in s.rowHeights.keys: rowSet[r] = true
+  for r in s.rowHidden.keys: rowSet[r] = true
+  var rows: seq[int] = @[]
+  for r in rowSet.keys: rows.add r
+  rows.sort()
+  for row in rows:
+    var attrs = xlsxAttr("r", $row)
+    if s.rowHidden.getOrDefault(row, false):
+      attrs.add xlsxAttr("hidden", "1")
+    if s.rowHeights.hasKey(row):
+      attrs.add xlsxAttr("ht", $s.rowHeights[row])
+    e.openTag("row", attrs)
+    var cellKeys: seq[int] = @[]
+    for k in s.cells.keys:
+      if keyColRow(k)[1] == row: cellKeys.add k
+    cellKeys.sort()
+    for key in cellKeys:
+      let (col, _) = keyColRow(key)
+      e.writeCell(doc, col, row, s.cells[key])
+    e.closeTag("row")
   e.closeTag("sheetData")
+  if s.merges.len > 0:
+    e.openTag("mergeCells", xlsxAttr("count", $s.merges.len))
+    for m in s.merges:
+      e.emptyTag("mergeCell", xlsxAttr("ref", m.`ref`))
+    e.closeTag("mergeCells")
+  if s.hyperlinks.len > 0:
+    # External links mint `rIdH1...` in first-seen order (same order
+    # as the sheet `.rels` writer below, so ids agree).
+    var hid = 0
+    e.openTag("hyperlinks")
+    for h in s.hyperlinks:
+      var attrs = xlsxAttr("ref", h.cell)
+      if h.display != "": attrs.add xlsxAttr("display", h.display)
+      if h.tooltip != "": attrs.add xlsxAttr("tooltip", h.tooltip)
+      if h.target != "":
+        inc hid
+        attrs.add xlsxAttr("r:id", "rIdH" & $hid)
+      if h.location != "": attrs.add xlsxAttr("location", h.location)
+      e.emptyTag("hyperlink", attrs)
+    e.closeTag("hyperlinks")
   e.closeTag("worksheet")
+
+proc writeSheetRelsXml(e: var XlsxEmit, s: XlsxWSheet): bool =
+  ## Sheet `.rels` for external hyperlinks. Returns false (no part)
+  ## when the sheet carries none.
+  var ext: seq[XlsxHyperlink] = @[]
+  for h in s.hyperlinks:
+    if h.target != "": ext.add h
+  if ext.len == 0: return false
+  e.decl()
+  e.openTag("Relationships",
+    xlsxAttr("xmlns",
+      "http://schemas.openxmlformats.org/package/2006/relationships"))
+  const relNs =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  for i, h in ext:
+    e.emptyTag("Relationship",
+      xlsxAttr("Id", "rIdH" & $(i + 1)) &
+      xlsxAttr("Type", relNs & "/hyperlink") &
+      xlsxAttr("Target", h.target) &
+      xlsxAttr("TargetMode", "External"))
+  e.closeTag("Relationships")
+  true
 
 proc writeSharedStringsXml(e: var XlsxEmit, doc: XlsxDoc) =
   e.decl()
@@ -551,6 +764,22 @@ proc writeWorkbookXml(e: var XlsxEmit, doc: XlsxDoc) =
       xlsxAttr("name", s.name) & xlsxAttr("sheetId", $s.sheetId) &
       xlsxAttr("r:id", "rId" & $(i + 1)))
   e.closeTag("sheets")
+  if doc.definedNames.len > 0:
+    e.openTag("definedNames")
+    for dn in doc.definedNames:
+      var attrs = xlsxAttr("name", dn.name)
+      if dn.scope != "Workbook":
+        # 0-based index into workbook order (reader parity).
+        var localId = -1
+        for i, s in doc.sheets:
+          if s.name == dn.scope:
+            localId = i
+            break
+        attrs.add xlsxAttr("localSheetId", $localId)
+      if dn.hidden: attrs.add xlsxAttr("hidden", "1")
+      if dn.comment != "": attrs.add xlsxAttr("comment", dn.comment)
+      e.elemNode("definedName", dn.refersTo, attrs)
+    e.closeTag("definedNames")
   e.emptyTag("calcPr", xlsxAttr("calcId", "122211"))
   e.closeTag("workbook")
 
@@ -762,6 +991,11 @@ proc buildParts(doc: var XlsxDoc, e: var XlsxEmit):
     result.add ("xl/worksheets/sheet" & $doc.sheets[si].sheetId & ".xml",
       e.toBytes())
     e.clear()
+    if e.writeSheetRelsXml(doc.sheets[si]):
+      result.add (sheetRelsPath(
+        "xl/worksheets/sheet" & $doc.sheets[si].sheetId & ".xml"),
+        e.toBytes())
+      e.clear()
   e.writeCoreXml(doc)
   result.add ("docProps/core.xml", e.toBytes())
   e.clear()
@@ -859,6 +1093,13 @@ proc saveXlsxBytes*(doc: var XlsxDoc,
       if name.endsWith(".rels"):
         let base = name[0 ..< name.len - 5]
         if base in emitted: continue
+        # Sheet `.rels` live under `_rels/` next to the sheet, not at
+        # `sheet.xml.rels`: drop stale ones for regenerated sheets so a
+        # carried hyperlink map can never dangle.
+        if name.startsWith("xl/worksheets/_rels/") and
+            name.endsWith(".xml.rels"):
+          let leaf = name["xl/worksheets/_rels/".len ..< name.len - 5]
+          if "xl/worksheets/" & leaf in emitted: continue
       w.addFile(name, data)
     try:
       result = w.toBytes()

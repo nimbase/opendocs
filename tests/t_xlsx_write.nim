@@ -179,3 +179,141 @@ suite "xlsx writer fresh build":
     finally:
       try: removeFile(path)
       except OSError: discard
+
+suite "xlsx writer sheet extras":
+  test "merges round-trip with anchor values":
+    var doc = newXlsxDoc()
+    doc.setCellStr("Sheet1", "A1", "top")
+    doc.addMerge("Sheet1", "A1:B2")
+    doc.addMerge("Sheet1", "D4:E5")
+    let img = doc.saveXlsxBytes()
+    let f = openXlsxBytes(img)
+    defer: f.closeXlsx()
+    check f.isMerged("Sheet1", "B2")
+    check not f.isMerged("Sheet1", "C3")
+    check f.getCellValue("Sheet1", "B2") == "top" # anchor redirect
+    check f.getSheetDimension("Sheet1") == "A1:E5" # merges grow dimension
+    let m = f.getMergeCells("Sheet1")
+    check m.len == 2
+    check m[0].`ref` == "A1:B2"
+    check m[1].`ref` == "D4:E5"
+
+  test "overlapping merges fail loudly":
+    var doc = newXlsxDoc()
+    doc.addMerge("Sheet1", "A1:B2")
+    expect XlsxError:
+      doc.addMerge("Sheet1", "B2:C3")
+    expect XlsxError:
+      doc.addMerge("Sheet1", "bogus")
+
+  test "column widths and visibility round-trip":
+    var doc = newXlsxDoc()
+    doc.setCellStr("Sheet1", "A1", "x")
+    doc.setColWidth("Sheet1", 1, 3, 20.0)
+    doc.setColHidden("Sheet1", 5, 6)
+    let img = doc.saveXlsxBytes()
+    let f = openXlsxBytes(img)
+    defer: f.closeXlsx()
+    check f.getColWidth("Sheet1", 1) == 20.0
+    check f.getColWidth("Sheet1", 3) == 20.0
+    check f.getColWidth("Sheet1", 4) == -1.0
+    check not f.getColVisible("Sheet1", 5)
+    check f.getColVisible("Sheet1", 4)
+
+  test "row heights and visibility round-trip":
+    var doc = newXlsxDoc()
+    doc.setCellStr("Sheet1", "A2", "x")
+    doc.setRowHeight("Sheet1", 2, 30.0)
+    doc.setRowHidden("Sheet1", 4)
+    let img = doc.saveXlsxBytes()
+    let f = openXlsxBytes(img)
+    defer: f.closeXlsx()
+    check f.getRowHeight("Sheet1", 2) == 30.0
+    check f.getRowHeight("Sheet1", 1) == -1.0
+    check not f.getRowVisible("Sheet1", 4)
+    check f.getRowVisible("Sheet1", 2)
+
+  test "geometry validation fails loudly":
+    var doc = newXlsxDoc()
+    expect XlsxError:
+      doc.setColWidth("Sheet1", 3, 2, 10.0)
+    expect XlsxError:
+      doc.setColWidth("Sheet1", 1, 1, 0.0)
+    expect XlsxError:
+      doc.setColWidth("Sheet1", 0, 1, 10.0)
+    expect XlsxError:
+      doc.setRowHeight("Sheet1", 1, -1.0)
+    expect XlsxError:
+      doc.setRowHidden("Sheet1", 0)
+
+  test "hyperlinks round-trip, external via rels":
+    var doc = newXlsxDoc()
+    doc.setCellStr("Sheet1", "A1", "ext")
+    doc.setCellStr("Sheet1", "B2", "in")
+    doc.addHyperlink("Sheet1", "A1", "https://example.com/?a=1&b=2",
+      display = "Example", tooltip = "Open it")
+    doc.addHyperlink("Sheet1", "B2:C3", "", location = "Other!A1",
+      display = "Jump")
+    doc.addSheet("Other")
+    let img = doc.saveXlsxBytes()
+    let f = openXlsxBytes(img)
+    defer: f.closeXlsx()
+    let (found, link) = f.getCellHyperlink("Sheet1", "A1")
+    check found
+    check link.target == "https://example.com/?a=1&b=2"
+    check link.display == "Example"
+    check link.tooltip == "Open it"
+    let (found2, link2) = f.getCellHyperlink("Sheet1", "C3")
+    check found2
+    check link2.cell == "B2:C3" # stored ref, not the covered cell
+    check link2.location == "Other!A1"
+    check link2.target == ""
+    # External rel part is really there (not inlined).
+    let arch = openZipBytes(img)
+    check arch.findEntry("xl/worksheets/_rels/sheet1.xml.rels") >= 0
+
+  test "hyperlink validation fails loudly":
+    var doc = newXlsxDoc()
+    expect XlsxError:
+      doc.addHyperlink("Sheet1", "A1", "")
+    expect XlsxError:
+      doc.addHyperlink("Sheet1", "ZZZ9", "https://example.com")
+    expect XlsxError:
+      doc.addHyperlink("Nope", "A1", "https://example.com")
+    # External target plus internal anchor is allowed (link with fragment).
+    doc.addHyperlink("Sheet1", "A1", "https://example.com",
+      location = "frag", display = "both")
+    let img = doc.saveXlsxBytes()
+    let f = openXlsxBytes(img)
+    defer: f.closeXlsx()
+    let (found, link) = f.getCellHyperlink("Sheet1", "A1")
+    check found
+    check link.target == "https://example.com"
+    check link.location == "frag"
+
+  test "defined names round-trip, scopes preserved":
+    var doc = newXlsxDoc()
+    doc.addSheet("Second")
+    doc.addDefinedName("Shared", "Sheet1!$A$1")
+    doc.addDefinedName("Local", "=$B$2", scope = "Second", hidden = true,
+      comment = "c")
+    expect XlsxError:
+      doc.addDefinedName("", "Sheet1!$A$1")
+    expect XlsxError:
+      doc.addDefinedName("A1", "Sheet1!$A$1") # cell-ref lookalike
+    expect XlsxError:
+      doc.addDefinedName("Nope", "Sheet1!$A$1", scope = "Missing")
+    expect XlsxError:
+      doc.addDefinedName("Empty", "")
+    let img = doc.saveXlsxBytes()
+    let f = openXlsxBytes(img)
+    defer: f.closeXlsx()
+    let names = f.getDefinedNames()
+    check names.len == 2
+    check names[0].name == "Shared"
+    check names[0].refersTo == "Sheet1!$A$1"
+    check names[0].scope == "Workbook"
+    check names[1].name == "Local"
+    check names[1].scope == "Second"
+    check names[1].hidden
+    check names[1].comment == "c"
