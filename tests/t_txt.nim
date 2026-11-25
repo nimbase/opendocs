@@ -221,8 +221,6 @@ suite "txt files and mapping":
   test "eachLine handles CRLF and lone CR":
     let path = getTempDir() / "nimbase-txt-breaks.txt"
     try:
-      let f = open(path, fmWrite)
-      doAssert f != nil
       var fh: File
       doAssert open(fh, path, fmWrite)
       fh.write("a\r\nb\rc\n")
